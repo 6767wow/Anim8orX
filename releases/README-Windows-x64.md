@@ -18,7 +18,7 @@ Use it to verify:
 - RMB+mouse wheel fly-speed adjustment.
 - World-space 3D grid and custom dark view selector.
 - Optimized idle behavior: the viewport frame timer sleeps when nothing is moving.
-- Optimized drawing path with cached GDI pens/brushes, persistent back buffer, cached camera projection basis, and one mesh vertex projection pass per frame.
+- Optimized drawing path with cached GDI pens/brushes, persistent back buffer, cached camera projection basis, one mesh vertex projection pass per frame, filled face rendering, and selected-mesh wire budget limits.
 - Optimized navigation repaint path: camera movement invalidates and blits only the viewport rectangle instead of redrawing the whole UI shell.
 - Native `.an8` file loading for object/group/mesh and common primitive component chunks.
 - Object, group, mesh, and helper-node discovery.
@@ -26,8 +26,8 @@ Use it to verify:
 - Quad-to-triangle geometry preparation.
 - Working Build primitives/helpers: cube, sphere, cylinder, cone, torus, text helper, bone helper, camera helper, and light helper.
 - Working Object actions: delete, extrude, inset, lathe, mirror, and face subdivision.
-- Live viewport toggles for grid, axes, normals, and backface culling.
-- Default cube wireframe in a gray grid viewport.
+- Live viewport toggles for grid, axes, normals, backface culling, wireframe, and flat-shaded faces.
+- Default cube shown as a filled flat-shaded object in a gray grid viewport.
 
 ## Run
 

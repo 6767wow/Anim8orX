@@ -11,15 +11,15 @@ This repository currently contains the first editor-shell brick with an Anim8or-
 - Branded `wlogo.png` logo displayed in the app chrome and used as the window icon.
 - World-space 3D grid in the viewport with camera-projected floor/depth guides.
 - Real Hierarchy panel next to the tool rail with selectable imported/generated mesh nodes.
-- Optimized retained GDI viewport shell with cached pens/brushes, persistent back buffer, cached projection basis, per-frame mesh vertex projection, viewport-only dirty repaints during navigation, and no idle repaint timer.
+- Optimized retained GDI viewport shell with cached pens/brushes, persistent back buffer, cached projection basis, per-frame mesh vertex projection, viewport-only dirty repaints during navigation, filled face rendering by default, selected-mesh wire budget limits, and no idle repaint timer.
 - Custom dark in-viewport view selector for All, Front, Back, Left, Right, Top, Bottom, Ortho, and Perspective.
 - File loading through `File > Open .an8...`, `Import`, drag-and-drop `.an8` files, command-line file arguments, or the bundled sample.
 - File saving through `File > Save`, `Save As...`, and `Export` for current mesh documents.
 - UniverseLib-inspired dock entry points and bottom dock for Explorer, Inspector, Console, Materials, and Timeline.
 - Working Build commands for cube, sphere, cylinder, cone, torus, text helper, bone helper, camera helper, and light helper nodes.
 - Working Object commands for delete, extrude, inset, lathe, mirror, and face subdivision.
-- Visible parameter surface for live grid/snap preferences, viewport display flags, material shader values, primitive dimensions, modifier inputs, bone/DOF constraints, sequence interpolation, scene actor/camera/light controls, and render output options.
-- Default cube viewport rendered at launch.
+- Visible parameter surface for live grid/snap preferences, viewport display flags, wireframe/flat-shaded toggles, material shader values, primitive dimensions, modifier inputs, bone/DOF constraints, sequence interpolation, scene actor/camera/light controls, and render output options.
+- Default cube viewport rendered as a filled flat-shaded object at launch.
 - Self-contained C++17 viewport camera controller with RMB+WASD fly, RMB+mouse wheel fly-speed adjustment, Alt+LMB orbit, Alt+MMB pan, scroll dolly, and F focus support.
 - Self-contained C++17 `.an8` lexer/parser for objects, groups, meshes, primitive components, points, nested face point-data, and triangle-list geometry preparation.
 

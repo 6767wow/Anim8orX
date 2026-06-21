@@ -15,6 +15,8 @@
 #include <Anim8orX/Viewport/Camera.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <climits>
 #include <cmath>
 #include <fstream>
 #include <filesystem>
@@ -62,6 +64,8 @@ constexpr int kMenuOptionAxis = 1242;
 constexpr int kMenuOptionNormals = 1243;
 constexpr int kMenuOptionBackface = 1244;
 constexpr int kMenuOptionPreferences = 1245;
+constexpr int kMenuOptionWireframe = 1246;
+constexpr int kMenuOptionFlatShaded = 1247;
 constexpr int kMenuBuildCube = 1230;
 constexpr int kMenuBuildSphere = 1231;
 constexpr int kMenuBuildCylinder = 1232;
@@ -120,6 +124,7 @@ struct UiLayout {
 };
 
 struct MeshView {
+    std::string displayName;
     std::string objectName;
     std::string meshName;
     std::vector<An8Vector3> points;
@@ -178,6 +183,8 @@ struct EditorState {
     bool showGrid = true;
     bool showAxes = true;
     bool showNormals = false;
+    bool showWireframe = false;
+    bool flatShaded = true;
     bool gridSnap = true;
     bool backfaceCulling = false;
 
@@ -556,9 +563,53 @@ void AddConsoleLine(EditorState& editor, const std::wstring& line) {
     }
 }
 
+bool StartsWithNoCase(const std::string& text, const char* prefix) {
+    const size_t prefixLength = std::char_traits<char>::length(prefix);
+    if (text.size() < prefixLength) {
+        return false;
+    }
+
+    for (size_t i = 0; i < prefixLength; ++i) {
+        if (std::tolower(static_cast<unsigned char>(text[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsGenericNodeName(const std::string& name) {
+    return name.empty() ||
+           StartsWithNoCase(name, "object_") ||
+           StartsWithNoCase(name, "mesh_") ||
+           StartsWithNoCase(name, "group_") ||
+           StartsWithNoCase(name, "child_");
+}
+
+std::string DisplayNameForMesh(const An8Object& object, const An8Mesh& mesh) {
+    if (!IsGenericNodeName(object.name) && object.meshes.size() == 1) {
+        return object.name;
+    }
+    if (!IsGenericNodeName(mesh.name)) {
+        return mesh.name;
+    }
+    if (!IsGenericNodeName(object.name)) {
+        return object.name;
+    }
+    if (!mesh.name.empty()) {
+        return mesh.name;
+    }
+    return object.name.empty() ? "Object" : object.name;
+}
+
 void CollectMeshesFromObject(const An8Object& object, std::vector<MeshView>& meshes) {
     for (const An8Mesh& mesh : object.meshes) {
+        if (mesh.points.empty() || mesh.faces.empty()) {
+            continue;
+        }
+
         MeshView view;
+        view.displayName = DisplayNameForMesh(object, mesh);
         view.objectName = object.name;
         view.meshName = mesh.name;
         view.points = mesh.points;
@@ -1664,8 +1715,11 @@ void DrawHierarchy(HDC dc, const EditorState& editor) {
         RectI row{panel.x + 8, y, panel.w - 16, 48};
         Fill(dc, row, selected ? Rgb(48, 78, 88) : Rgb(30, 33, 39));
         Stroke(dc, row, selected ? Rgb(92, 174, 188) : Rgb(50, 55, 65));
-        Text(dc, L"> " + ToWide(mesh.objectName), row.x + 10, row.y + 4, row.w - 20, 20, Rgb(235, 239, 243), editor.font);
-        Text(dc, L"  Mesh: " + ToWide(mesh.meshName), row.x + 10, row.y + 24, row.w - 20, 18, Rgb(166, 175, 187), editor.smallFont);
+        Text(dc, L"> " + ToWide(mesh.displayName), row.x + 10, row.y + 4, row.w - 20, 20, Rgb(235, 239, 243), editor.font);
+        const std::wstring source = mesh.objectName.empty() || mesh.objectName == mesh.displayName
+            ? L"  Mesh: " + ToWide(mesh.meshName)
+            : L"  Object: " + ToWide(mesh.objectName);
+        Text(dc, source, row.x + 10, row.y + 24, row.w - 20, 18, Rgb(166, 175, 187), editor.smallFont);
         y += 54;
     }
 
@@ -1776,8 +1830,8 @@ void DrawInspector(HDC dc, const EditorState& editor) {
 
         case 1:
             DrawSectionTitle(dc, editor, x, y, L"Display Mode Flags");
-            DrawCheckboxRow(dc, editor, x, y, L"Wireframe", true); y += 22;
-            DrawCheckboxRow(dc, editor, x, y, L"Flat Shaded", false); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Wireframe", editor.showWireframe); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Flat Shaded", editor.flatShaded); y += 22;
             DrawCheckboxRow(dc, editor, x, y, L"Smooth Shaded", false); y += 22;
             DrawCheckboxRow(dc, editor, x, y, L"Textured", false); y += 30;
             DrawSectionTitle(dc, editor, x, y, L"Camera");
@@ -1808,7 +1862,7 @@ void DrawInspector(HDC dc, const EditorState& editor) {
 
         case 3:
             DrawSectionTitle(dc, editor, x, y, L"Primitive Parameters");
-            DrawInspectorRow(dc, editor, x, y, L"Cube Name", mesh ? ToWide(mesh->meshName) : L"cube"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Name", mesh ? ToWide(mesh->displayName) : L"cube"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"X/Y/Z Size", L"2.0, 2.0, 2.0"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"X/Y/Z Divs", L"1, 1, 1"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Sphere Radius", L"1.0"); y += 24;
@@ -1854,7 +1908,7 @@ void DrawInspector(HDC dc, const EditorState& editor) {
 
         case 6:
             DrawSectionTitle(dc, editor, x, y, L"Actor Instance");
-            DrawInspectorRow(dc, editor, x, y, L"Name", mesh ? ToWide(mesh->objectName) : L"object01"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Name", mesh ? ToWide(mesh->displayName) : L"object01"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Position", L"0.0, 0.0, 0.0"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Rotation", L"0.0, 0.0, 0.0"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Scale", L"1.0, 1.0, 1.0"); y += 30;
@@ -1964,16 +2018,73 @@ void DrawGridAndAxes(HDC dc, const EditorState& editor) {
     }
 }
 
+COLORREF ScaleColor(COLORREF color, float scale) {
+    scale = std::clamp(scale, 0.0f, 1.75f);
+    const int r = std::clamp(static_cast<int>(GetRValue(color) * scale), 0, 255);
+    const int g = std::clamp(static_cast<int>(GetGValue(color) * scale), 0, 255);
+    const int b = std::clamp(static_cast<int>(GetBValue(color) * scale), 0, 255);
+    return Rgb(r, g, b);
+}
+
+COLORREF FaceFillColor(bool selected, bool hasNormal, const Vec3& normal) {
+    const COLORREF base = selected ? Rgb(212, 151, 62) : Rgb(102, 132, 156);
+    if (!hasNormal) {
+        return base;
+    }
+
+    const Vec3 light = anim8orx::Normalize(Vec3{-0.35f, 0.72f, -0.48f});
+    const float diffuse = std::max(0.0f, anim8orx::Dot(normal, light));
+    return ScaleColor(base, 0.58f + diffuse * 0.52f);
+}
+
+void DrawFilledPolygon(HDC dc, std::vector<POINT>& points, COLORREF fill) {
+    if (points.size() < 3) {
+        return;
+    }
+
+    HBRUSH brush = CachedGdi().Brush(fill);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    Polygon(dc, points.data(), static_cast<int>(points.size()));
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+}
+
 void DrawMeshes(HDC dc, const EditorState& editor) {
     for (size_t meshIndex = 0; meshIndex < editor.meshes.size(); ++meshIndex) {
         const MeshView& mesh = editor.meshes[meshIndex];
         const bool selected = static_cast<int>(meshIndex) == editor.selectedMesh;
-        const COLORREF color = selected ? Rgb(239, 189, 87) : Rgb(192, 199, 207);
+        const COLORREF color = selected ? Rgb(239, 189, 87) : Rgb(135, 161, 184);
         const int width = selected ? 2 : 1;
         std::vector<ProjectionPoint> projectedPoints;
         projectedPoints.reserve(mesh.points.size());
         for (const An8Vector3& point : mesh.points) {
             projectedPoints.push_back(ProjectPoint(editor, point));
+        }
+
+        constexpr size_t kSelectedWireFaceBudget = 2200;
+        const bool drawEdges = editor.showWireframe ||
+                               !editor.flatShaded ||
+                               editor.showNormals ||
+                               (selected && mesh.faces.size() <= kSelectedWireFaceBudget);
+        std::vector<POINT> polygonPoints;
+        polygonPoints.reserve(8);
+        bool selectedUsedCheapBounds = selected && !drawEdges;
+        LONG selectedMinX = LONG_MAX;
+        LONG selectedMinY = LONG_MAX;
+        LONG selectedMaxX = LONG_MIN;
+        LONG selectedMaxY = LONG_MIN;
+
+        if (selectedUsedCheapBounds) {
+            for (const ProjectionPoint& point : projectedPoints) {
+                if (!point.visible) {
+                    continue;
+                }
+                selectedMinX = std::min(selectedMinX, point.p.x);
+                selectedMinY = std::min(selectedMinY, point.p.y);
+                selectedMaxX = std::max(selectedMaxX, point.p.x);
+                selectedMaxY = std::max(selectedMaxY, point.p.y);
+            }
         }
 
         for (const An8Face& face : mesh.faces) {
@@ -2019,6 +2130,27 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                 }
             }
 
+            if (editor.flatShaded && face.indices.size() >= 3) {
+                polygonPoints.clear();
+                bool allVisible = true;
+                for (uint32_t index : face.indices) {
+                    if (index >= projectedPoints.size() || !projectedPoints[index].visible) {
+                        allVisible = false;
+                        break;
+                    }
+                    polygonPoints.push_back(projectedPoints[index].p);
+                }
+
+                if (allVisible && polygonPoints.size() >= 3) {
+                    const COLORREF fill = FaceFillColor(selected, hasNormal, normal);
+                    DrawFilledPolygon(dc, polygonPoints, fill);
+                }
+            }
+
+            if (!drawEdges) {
+                continue;
+            }
+
             for (size_t i = 0; i < face.indices.size(); ++i) {
                 const uint32_t a = face.indices[i];
                 const uint32_t b = face.indices[(i + 1) % face.indices.size()];
@@ -2040,6 +2172,17 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                     DrawWorldLine(dc, editor, {center.x, center.y, center.z}, {end.x, end.y, end.z}, Rgb(92, 174, 188), 1);
                 }
             }
+        }
+
+        if (selectedUsedCheapBounds &&
+            selectedMinX < selectedMaxX &&
+            selectedMinY < selectedMaxY) {
+            Stroke(dc, {
+                static_cast<int>(selectedMinX),
+                static_cast<int>(selectedMinY),
+                static_cast<int>(selectedMaxX - selectedMinX),
+                static_cast<int>(selectedMaxY - selectedMinY)
+            }, Rgb(239, 189, 87));
         }
     }
 }
@@ -2150,7 +2293,7 @@ void DrawStatus(HDC dc, const EditorState& editor) {
 
     std::wstring right = L"Object: ";
     if (editor.selectedMesh >= 0 && editor.selectedMesh < static_cast<int>(editor.meshes.size())) {
-        right += ToWide(editor.meshes[static_cast<size_t>(editor.selectedMesh)].objectName);
+        right += ToWide(editor.meshes[static_cast<size_t>(editor.selectedMesh)].displayName);
     } else {
         right += L"none";
     }
@@ -2377,7 +2520,7 @@ void ClickHierarchy(EditorState& editor, int x, int y) {
             editor.selectedMesh = static_cast<int>(i);
             RecalculateSelectionBounds(editor);
             editor.camera.FocusOn(editor.selectionCenter, editor.selectionRadius);
-            AddConsoleLine(editor, L"Selected mesh: " + ToWide(editor.meshes[i].meshName));
+            AddConsoleLine(editor, L"Selected object: " + ToWide(editor.meshes[i].displayName));
             InvalidateRect(editor.hwnd, nullptr, FALSE);
             return;
         }
@@ -2526,7 +2669,7 @@ HMENU CreateAnim8orXMenu() {
         {L"Edit", {L"Undo", L"Redo", L"Cut", L"Copy", L"Paste", L"Delete", L"Select All", L"Preferences", nullptr}},
         {L"Mode", {L"Object", L"Figure", L"Sequence", L"Scene", nullptr}},
         {L"Object", {L"New Mesh", L"Convert to Mesh", L"Join Solids", L"Subdivide Faces", L"Extrude", L"Inset", L"Lathe", L"Mirror", L"Smooth", nullptr}},
-        {L"Options", {L"Grid", L"Snapping", L"Show Axis", L"Show Normals", L"Backface Culling", L"Theme", nullptr}},
+        {L"Options", {L"Grid", L"Snapping", L"Show Axis", L"Show Normals", L"Backface Culling", L"Wireframe", L"Flat Shaded", L"Theme", nullptr}},
         {L"View", {L"All", L"Front", L"Back", L"Left", L"Right", L"Top", L"Bottom", L"Ortho", L"Perspective", L"Frame Selection", nullptr}},
         {L"Build", {L"Add Cube", L"Add Sphere", L"Add Cylinder", L"Add Cone", L"Add Torus", L"Add Text", L"Add Bone", L"Add Camera", L"Add Light", nullptr}},
         {L"Scripts", {L"Run Script...", L"Script Console", L"Reload Scripts", nullptr}},
@@ -2587,6 +2730,10 @@ HMENU CreateAnim8orXMenu() {
                 } else if (i == 4) {
                     id = kMenuOptionBackface;
                 } else if (i == 5) {
+                    id = kMenuOptionWireframe;
+                } else if (i == 6) {
+                    id = kMenuOptionFlatShaded;
+                } else if (i == 7) {
                     id = kMenuOptionPreferences;
                 }
             } else if (wcscmp(spec.name, L"View") == 0) {
@@ -2752,6 +2899,16 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                     editor.backfaceCulling = !editor.backfaceCulling;
                     editor.propertyPage = 0;
                     AddConsoleLine(editor, editor.backfaceCulling ? L"Backface culling enabled." : L"Backface culling disabled.");
+                    break;
+                case kMenuOptionWireframe:
+                    editor.showWireframe = !editor.showWireframe;
+                    editor.propertyPage = 1;
+                    AddConsoleLine(editor, editor.showWireframe ? L"Wireframe enabled." : L"Wireframe disabled.");
+                    break;
+                case kMenuOptionFlatShaded:
+                    editor.flatShaded = !editor.flatShaded;
+                    editor.propertyPage = 1;
+                    AddConsoleLine(editor, editor.flatShaded ? L"Flat shaded faces enabled." : L"Flat shaded faces disabled.");
                     break;
                 case kMenuOptionPreferences:
                     editor.propertyPage = 0;
