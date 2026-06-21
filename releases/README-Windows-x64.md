@@ -18,6 +18,9 @@ Open PowerShell in this folder:
 .\Anim8orX.exe .\examples\cube.an8
 ```
 
+You can also double-click `Anim8orX.exe`. With no command-line argument it
+loads the bundled cube sample and waits before closing.
+
 Expected output includes:
 
 ```text

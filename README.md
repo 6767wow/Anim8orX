@@ -22,6 +22,10 @@ Run the parser sandbox:
 .\build\Release\Anim8orX.exe .\examples\cube.an8
 ```
 
+The packaged Windows build can also be double-clicked. If no file argument is
+provided, it loads the bundled `examples/cube.an8` sample and waits before
+closing so the output is visible.
+
 On single-config generators, the executable may be under `build\Anim8orX.exe`.
 
 ## Repository Layout

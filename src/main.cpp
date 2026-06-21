@@ -1,16 +1,65 @@
 #include <Anim8orX/Import/An8Parser.hpp>
 #include <Anim8orX/Viewport/Camera.hpp>
 
+#include <filesystem>
 #include <iostream>
 #include <string>
+#include <vector>
 
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "usage: anim8orx_sandbox <file.an8>\n";
-        return 2;
+namespace {
+
+std::filesystem::path FindBundledSample(char** argv) {
+    const std::filesystem::path executablePath =
+        std::filesystem::absolute(std::filesystem::path(argv[0])).parent_path();
+
+    const std::vector<std::filesystem::path> candidates = {
+        executablePath / "examples" / "cube.an8",
+        executablePath.parent_path() / "examples" / "cube.an8",
+        std::filesystem::current_path() / "examples" / "cube.an8"
+    };
+
+    for (const std::filesystem::path& candidate : candidates) {
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
     }
 
-    const std::string path = argv[1];
+    return {};
+}
+
+void WaitBeforeExitIfNeeded(bool shouldWait) {
+    if (!shouldWait) {
+        return;
+    }
+
+    std::cout << "\nPress Enter to exit...";
+    std::cout.flush();
+    std::string ignored;
+    std::getline(std::cin, ignored);
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    const bool launchedWithoutFile = argc < 2;
+    std::string path;
+
+    if (launchedWithoutFile) {
+        const std::filesystem::path samplePath = FindBundledSample(argv);
+        if (samplePath.empty()) {
+            std::cerr << "usage: Anim8orX <file.an8>\n";
+            std::cerr << "No file was provided and examples/cube.an8 was not found.\n";
+            WaitBeforeExitIfNeeded(true);
+            return 2;
+        }
+
+        std::cout << "No .an8 file argument was provided. Loading bundled sample:\n"
+                  << samplePath.string() << "\n\n";
+        path = samplePath.string();
+    } else {
+        path = argv[1];
+    }
+
     const anim8orx::An8LoadResult result = anim8orx::LoadAn8File(path);
 
     for (const std::string& warning : result.warnings) {
@@ -21,6 +70,7 @@ int main(int argc, char** argv) {
         for (const std::string& error : result.errors) {
             std::cerr << "error: " << error << "\n";
         }
+        WaitBeforeExitIfNeeded(launchedWithoutFile);
         return 1;
     }
 
@@ -70,6 +120,6 @@ int main(int argc, char** argv) {
               << " projection[0]=" << projection.m[0]
               << "\n";
 
+    WaitBeforeExitIfNeeded(launchedWithoutFile);
     return 0;
 }
-
