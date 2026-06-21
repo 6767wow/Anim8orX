@@ -10,7 +10,7 @@ Use it to verify:
 - File loading through `File > Open .an8...`, `Import`, drag-and-drop, and command-line paths.
 - File saving through `File > Save`, `Save As...`, and `Export`.
 - Slim left modeling rail with mode, coordinate, axis, tool, UV, shape, rig, and key groups.
-- Separate selectable Hierarchy panel for scene graph mesh nodes.
+- Separate selectable Hierarchy panel for top-level Anim8or objects and mesh nodes.
 - Anim8or-style Object, Figure, Sequence, and Scene modes.
 - UniverseLib-style dock entry points for Explorer, Inspector, Console, Materials, and Timeline.
 - Anim8orX property deck pages for Setup, View, Material, Object, Figure, Sequence, Scene, and Render.
@@ -18,15 +18,15 @@ Use it to verify:
 - RMB+mouse wheel fly-speed adjustment.
 - World-space 3D grid and custom dark view selector.
 - Optimized idle behavior: the viewport frame timer sleeps when nothing is moving.
-- Optimized drawing path with cached GDI pens/brushes, persistent back buffer, cached camera projection basis, one mesh vertex projection pass per frame, filled face rendering, and selected-mesh wire budget limits.
+- Optimized drawing path with cached GDI pens/brushes, persistent back buffer, cached camera projection basis, one mesh vertex projection pass per frame, cached face normals/material colors, filled face rendering, adaptive large-file face budgets, and selected-mesh wire budget limits.
 - Optimized navigation repaint path: camera movement invalidates and blits only the viewport rectangle instead of redrawing the whole UI shell.
-- Native `.an8` file loading for object/group/mesh and common primitive component chunks.
+- Native `.an8` file loading for texture, material, object/group/mesh, subdivision control mesh, base orientation, UV, face material slot, and common primitive component chunks.
 - Object, group, mesh, and helper-node discovery.
 - Point parsing and Anim8or nested face point-data parsing.
 - Quad-to-triangle geometry preparation.
 - Working Build primitives/helpers: cube, sphere, cylinder, cone, torus, text helper, bone helper, camera helper, and light helper.
 - Working Object actions: delete, extrude, inset, lathe, mirror, and face subdivision.
-- Live viewport toggles for grid, axes, normals, backface culling, wireframe, and flat-shaded faces.
+- Live viewport toggles for grid, axes, normals, backface culling, wireframe, and flat-shaded material-colored faces.
 - Default cube shown as a filled flat-shaded object in a gray grid viewport.
 
 ## Run

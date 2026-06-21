@@ -22,23 +22,54 @@ struct An8Vector3 {
     float z = 0.0f;
 };
 
+struct An8Vector2 {
+    float u = 0.0f;
+    float v = 0.0f;
+};
+
+struct An8Color {
+    int r = 160;
+    int g = 170;
+    int b = 180;
+    bool valid = false;
+};
+
+struct An8Texture {
+    std::string name;
+    std::string filePath;
+};
+
+struct An8Material {
+    std::string name;
+    An8Color diffuse;
+    std::string textureName;
+    std::string textureKind;
+};
+
 struct An8Face {
     std::vector<uint32_t> indices;
+    std::vector<uint32_t> texcoordIndices;
+    int materialIndex = -1;
 };
 
 struct An8Mesh {
     std::string name;
+    std::string defaultMaterialName;
+    std::vector<std::string> materialNames;
     std::vector<An8Vector3> points;
+    std::vector<An8Vector2> texcoords;
     std::vector<An8Face> faces;
 };
 
 struct An8Object {
     std::string name;
+    std::vector<An8Material> materials;
     std::vector<An8Mesh> meshes;
     std::vector<An8Object> children;
 };
 
 struct An8Document {
+    std::vector<An8Texture> textures;
     std::vector<An8Object> objects;
 };
 
@@ -291,6 +322,12 @@ public:
                     object.name = "Object_" + std::to_string(doc.objects.size());
                 }
                 doc.objects.push_back(std::move(object));
+            } else if (CheckIdentifier("texture")) {
+                Advance();
+                An8Texture texture = ParseTexture();
+                if (!texture.name.empty()) {
+                    doc.textures.push_back(std::move(texture));
+                }
             } else {
                 SkipTopLevelEntry();
             }
@@ -361,13 +398,17 @@ private:
         }
 
         while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
-            if (CheckIdentifier("mesh")) {
+            if (CheckIdentifier("mesh") || CheckIdentifier("subdivision")) {
+                const bool subdivision = CheckIdentifier("subdivision");
                 Advance();
                 An8Mesh mesh = ParseMesh();
                 if (mesh.name.empty()) {
                     mesh.name = object.name.empty()
                         ? "Mesh_" + std::to_string(object.meshes.size())
                         : object.name + "_Mesh_" + std::to_string(object.meshes.size());
+                }
+                if (subdivision && mesh.name.find("subdivision") == std::string::npos) {
+                    mesh.name += " subdivision";
                 }
                 object.meshes.push_back(std::move(mesh));
             } else if (IsPrimitiveComponent()) {
@@ -392,6 +433,12 @@ private:
                     group.name = "Group_" + std::to_string(object.children.size());
                 }
                 object.children.push_back(std::move(group));
+            } else if (CheckIdentifier("material")) {
+                Advance();
+                An8Material material = ParseMaterialDefinition();
+                if (!material.name.empty()) {
+                    object.materials.push_back(std::move(material));
+                }
             } else if (CheckIdentifier("name")) {
                 ParseNameProperty(object.name);
             } else if (Check(An8TokenKind::String) && object.name.empty()) {
@@ -419,13 +466,17 @@ private:
         }
 
         while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
-            if (CheckIdentifier("mesh")) {
+            if (CheckIdentifier("mesh") || CheckIdentifier("subdivision")) {
+                const bool subdivision = CheckIdentifier("subdivision");
                 Advance();
                 An8Mesh mesh = ParseMesh();
                 if (mesh.name.empty()) {
                     mesh.name = group.name.empty()
                         ? "Mesh_" + std::to_string(group.meshes.size())
                         : group.name + "_Mesh_" + std::to_string(group.meshes.size());
+                }
+                if (subdivision && mesh.name.find("subdivision") == std::string::npos) {
+                    mesh.name += " subdivision";
                 }
                 group.meshes.push_back(std::move(mesh));
             } else if (IsPrimitiveComponent()) {
@@ -443,6 +494,12 @@ private:
                     child.name = "Group_" + std::to_string(group.children.size());
                 }
                 group.children.push_back(std::move(child));
+            } else if (CheckIdentifier("material")) {
+                Advance();
+                An8Material material = ParseMaterialDefinition();
+                if (!material.name.empty()) {
+                    group.materials.push_back(std::move(material));
+                }
             } else if (CheckIdentifier("name")) {
                 ParseNameProperty(group.name);
             } else if (Check(An8TokenKind::String) && group.name.empty()) {
@@ -457,10 +514,23 @@ private:
         return group;
     }
 
+    struct An8Quaternion {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        float w = 1.0f;
+    };
+
+    struct An8BaseTransform {
+        An8Vector3 origin;
+        An8Quaternion orientation;
+        bool hasOrigin = false;
+        bool hasOrientation = false;
+    };
+
     An8Mesh ParseMesh() {
         An8Mesh mesh;
-        An8Vector3 baseOrigin{};
-        bool hasBaseOrigin = false;
+        An8BaseTransform baseTransform;
 
         if (Check(An8TokenKind::String)) {
             mesh.name = current_.text;
@@ -480,23 +550,28 @@ private:
             } else if (CheckIdentifier("points")) {
                 Advance();
                 mesh.points = ParsePoints();
+            } else if (CheckIdentifier("texcoords")) {
+                Advance();
+                mesh.texcoords = ParseTexcoords();
             } else if (CheckIdentifier("faces")) {
                 Advance();
                 mesh.faces = ParseFaces();
             } else if (CheckIdentifier("base")) {
                 Advance();
-                if (ParseBaseOrigin(baseOrigin)) {
-                    hasBaseOrigin = true;
-                }
+                ParseBaseTransform(baseTransform);
+            } else if (CheckIdentifier("material")) {
+                Advance();
+                ParseMeshMaterialReference(mesh.defaultMaterialName);
+            } else if (CheckIdentifier("materiallist")) {
+                Advance();
+                mesh.materialNames = ParseMaterialList();
             } else {
                 SkipPropertyOrBlock();
             }
         }
 
         Expect(An8TokenKind::RBrace, "expected '}' to close mesh");
-        if (hasBaseOrigin) {
-            TranslateMesh(mesh, baseOrigin);
-        }
+        ApplyBaseTransform(mesh, baseTransform);
         return mesh;
     }
 
@@ -508,8 +583,6 @@ private:
 
     An8Mesh ParsePrimitiveComponent(const std::string& kind) {
         std::string name = kind;
-        An8Vector3 baseOrigin{};
-        bool hasBaseOrigin = false;
 
         float cubeX = 2.0f;
         float cubeY = 2.0f;
@@ -526,6 +599,7 @@ private:
         bool capStart = false;
         bool capEnd = false;
         int cylinderSegments = 24;
+        An8BaseTransform baseTransform;
 
         if (!Expect(An8TokenKind::LBrace, "expected '{' after primitive component")) {
             return {};
@@ -544,9 +618,7 @@ private:
                 ParseNameProperty(name);
             } else if (CheckIdentifier("base")) {
                 Advance();
-                if (ParseBaseOrigin(baseOrigin)) {
-                    hasBaseOrigin = true;
-                }
+                ParseBaseTransform(baseTransform);
             } else if (kind == "cube" && CheckIdentifier("size")) {
                 Advance();
                 const std::vector<double> values = ParseNumberChunk(3, "expected '{' after size");
@@ -638,23 +710,205 @@ private:
             mesh = BuildCylinderPrimitive(name, cylinderTopRadius, cylinderBottomRadius, cylinderLength, cylinderSegments, capStart, capEnd);
         }
 
-        if (hasBaseOrigin) {
-            TranslateMesh(mesh, baseOrigin);
-        }
+        ApplyBaseTransform(mesh, baseTransform);
         return mesh;
     }
 
-    bool ParseBaseOrigin(An8Vector3& outOrigin) {
-        bool found = false;
+    An8Texture ParseTexture() {
+        An8Texture texture;
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after texture")) {
+            return texture;
+        }
+
+        if (Check(An8TokenKind::String)) {
+            texture.name = current_.text;
+            Advance();
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("name")) {
+                Advance();
+                ParseStringChunk(texture.name, "expected '{' after texture name");
+            } else if (CheckIdentifier("file")) {
+                Advance();
+                ParseStringChunk(texture.filePath, "expected '{' after texture file");
+            } else if (Check(An8TokenKind::String) && texture.name.empty()) {
+                texture.name = current_.text;
+                Advance();
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' to close texture");
+        return texture;
+    }
+
+    An8Material ParseMaterialDefinition() {
+        An8Material material;
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after material")) {
+            return material;
+        }
+
+        if (Check(An8TokenKind::String)) {
+            material.name = current_.text;
+            Advance();
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("name")) {
+                Advance();
+                ParseStringChunk(material.name, "expected '{' after material name");
+            } else if (CheckIdentifier("surface")) {
+                Advance();
+                ParseSurface(material);
+            } else if (Check(An8TokenKind::String) && material.name.empty()) {
+                material.name = current_.text;
+                Advance();
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' to close material");
+        return material;
+    }
+
+    void ParseSurface(An8Material& material) {
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after surface")) {
+            return;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("rgb")) {
+                Advance();
+                ParseRgbChunk(material.diffuse);
+            } else if (CheckIdentifier("diffuse")) {
+                Advance();
+                ParseDiffuseBlock(material);
+            } else if (CheckIdentifier("map")) {
+                Advance();
+                ParseMaterialMap(material);
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' to close surface");
+    }
+
+    void ParseDiffuseBlock(An8Material& material) {
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after diffuse")) {
+            return;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("rgb")) {
+                Advance();
+                ParseRgbChunk(material.diffuse);
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' after diffuse");
+    }
+
+    void ParseMaterialMap(An8Material& material) {
+        std::string kind;
+        std::string textureName;
+
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after map")) {
+            return;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("kind")) {
+                Advance();
+                ParseStringChunk(kind, "expected '{' after map kind");
+            } else if (CheckIdentifier("texturename") || CheckIdentifier("texture")) {
+                Advance();
+                ParseStringChunk(textureName, "expected '{' after texture name");
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' after map");
+        if (!textureName.empty()) {
+            material.textureName = textureName;
+            material.textureKind = ToLowerAscii(kind);
+        }
+    }
+
+    void ParseMeshMaterialReference(std::string& outName) {
+        ParseStringChunk(outName, "expected '{' after mesh material");
+    }
+
+    std::vector<std::string> ParseMaterialList() {
+        std::vector<std::string> materialNames;
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after materiallist")) {
+            return materialNames;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("materialname")) {
+                Advance();
+                std::string name;
+                ParseStringChunk(name, "expected '{' after materialname");
+                if (!name.empty()) {
+                    materialNames.push_back(std::move(name));
+                }
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' after materiallist");
+        return materialNames;
+    }
+
+    void ParseStringChunk(std::string& outText, const char* message) {
+        if (!Expect(An8TokenKind::LBrace, message)) {
+            return;
+        }
+
+        if (Check(An8TokenKind::String) || Check(An8TokenKind::Identifier)) {
+            outText = current_.text;
+            Advance();
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            SkipPropertyOrBlock();
+        }
+        Expect(An8TokenKind::RBrace, "expected '}' after string chunk");
+    }
+
+    void ParseRgbChunk(An8Color& outColor) {
+        const std::vector<double> values = ParseNumberChunk(3, "expected '{' after rgb");
+        if (values.size() >= 3) {
+            outColor.r = ClampColorByte(values[0]);
+            outColor.g = ClampColorByte(values[1]);
+            outColor.b = ClampColorByte(values[2]);
+            outColor.valid = true;
+        }
+    }
+
+    void ParseBaseTransform(An8BaseTransform& outTransform) {
         if (!Expect(An8TokenKind::LBrace, "expected '{' after base")) {
-            return false;
+            return;
         }
 
         while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
             if (CheckIdentifier("origin")) {
                 Advance();
-                if (ParseVector3Chunk(outOrigin, "expected '{' after origin")) {
-                    found = true;
+                if (ParseVector3Chunk(outTransform.origin, "expected '{' after origin")) {
+                    outTransform.hasOrigin = true;
+                }
+            } else if (CheckIdentifier("orientation")) {
+                Advance();
+                if (ParseQuaternionChunk(outTransform.orientation, "expected '{' after orientation")) {
+                    outTransform.hasOrientation = true;
                 }
             } else {
                 SkipPropertyOrBlock();
@@ -662,7 +916,53 @@ private:
         }
 
         Expect(An8TokenKind::RBrace, "expected '}' after base");
-        return found;
+    }
+
+    bool ParseQuaternionChunk(An8Quaternion& outQuaternion, const char* message) {
+        if (!Expect(An8TokenKind::LBrace, message)) {
+            return false;
+        }
+
+        std::vector<double> values;
+        if (Check(An8TokenKind::LParen)) {
+            Advance();
+            while (!Check(An8TokenKind::End) &&
+                   !Check(An8TokenKind::RParen) &&
+                   values.size() < 4) {
+                if (Check(An8TokenKind::Number)) {
+                    values.push_back(current_.number);
+                    Advance();
+                } else {
+                    SkipPropertyOrBlock();
+                }
+            }
+            Expect(An8TokenKind::RParen, "expected ')' after orientation tuple");
+        } else {
+            while (!Check(An8TokenKind::End) &&
+                   !Check(An8TokenKind::RBrace) &&
+                   values.size() < 4) {
+                if (Check(An8TokenKind::Number)) {
+                    values.push_back(current_.number);
+                    Advance();
+                } else {
+                    SkipPropertyOrBlock();
+                }
+            }
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            SkipPropertyOrBlock();
+        }
+        Expect(An8TokenKind::RBrace, "expected '}' after orientation");
+
+        if (values.size() >= 4) {
+            outQuaternion.x = static_cast<float>(values[0]);
+            outQuaternion.y = static_cast<float>(values[1]);
+            outQuaternion.z = static_cast<float>(values[2]);
+            outQuaternion.w = static_cast<float>(values[3]);
+            return true;
+        }
+        return false;
     }
 
     bool ParseVector3Chunk(An8Vector3& outVector, const char* message) {
@@ -849,11 +1149,61 @@ private:
         return mesh;
     }
 
-    static void TranslateMesh(An8Mesh& mesh, const An8Vector3& delta) {
+    static int ClampColorByte(double value) {
+        return std::clamp(static_cast<int>(value), 0, 255);
+    }
+
+    static std::string ToLowerAscii(std::string text) {
+        for (char& c : text) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return text;
+    }
+
+    static An8Vector3 RotateVector(const An8Vector3& point, An8Quaternion q) {
+        const float length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+        if (length <= 0.00001f) {
+            return point;
+        }
+
+        q.x /= length;
+        q.y /= length;
+        q.z /= length;
+        q.w /= length;
+
+        const An8Vector3 u{q.x, q.y, q.z};
+        const float s = q.w;
+        const auto dot = [](const An8Vector3& a, const An8Vector3& b) {
+            return a.x * b.x + a.y * b.y + a.z * b.z;
+        };
+        const auto cross = [](const An8Vector3& a, const An8Vector3& b) {
+            return An8Vector3{
+                a.y * b.z - a.z * b.y,
+                a.z * b.x - a.x * b.z,
+                a.x * b.y - a.y * b.x
+            };
+        };
+
+        const An8Vector3 c = cross(u, point);
+        const float udot = dot(u, point);
+        const float ulen2 = dot(u, u);
+        return {
+            2.0f * udot * u.x + (s * s - ulen2) * point.x + 2.0f * s * c.x,
+            2.0f * udot * u.y + (s * s - ulen2) * point.y + 2.0f * s * c.y,
+            2.0f * udot * u.z + (s * s - ulen2) * point.z + 2.0f * s * c.z
+        };
+    }
+
+    static void ApplyBaseTransform(An8Mesh& mesh, const An8BaseTransform& transform) {
         for (An8Vector3& point : mesh.points) {
-            point.x += delta.x;
-            point.y += delta.y;
-            point.z += delta.z;
+            if (transform.hasOrientation) {
+                point = RotateVector(point, transform.orientation);
+            }
+            if (transform.hasOrigin) {
+                point.x += transform.origin.x;
+                point.y += transform.origin.y;
+                point.z += transform.origin.z;
+            }
         }
     }
 
@@ -899,6 +1249,24 @@ private:
         return points;
     }
 
+    std::vector<An8Vector2> ParseTexcoords() {
+        std::vector<An8Vector2> texcoords;
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after texcoords")) {
+            return texcoords;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (Check(An8TokenKind::LParen)) {
+                texcoords.push_back(ParseVector2());
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' to close texcoords");
+        return texcoords;
+    }
+
     An8Vector3 ParseVector3() {
         An8Vector3 v;
         Expect(An8TokenKind::LParen, "expected '(' before vector");
@@ -906,6 +1274,15 @@ private:
         v.y = ReadFloat("expected vector y value");
         v.z = ReadFloat("expected vector z value");
         Expect(An8TokenKind::RParen, "expected ')' after vector");
+        return v;
+    }
+
+    An8Vector2 ParseVector2() {
+        An8Vector2 v;
+        Expect(An8TokenKind::LParen, "expected '(' before texcoord");
+        v.u = ReadFloat("expected texcoord u value");
+        v.v = ReadFloat("expected texcoord v value");
+        Expect(An8TokenKind::RParen, "expected ')' after texcoord");
         return v;
     }
 
@@ -922,6 +1299,7 @@ private:
             }
 
             const int expectedCount = ReadInt("expected face vertex count");
+            std::vector<int> faceHeader;
 
             // Anim8or face rows commonly start as:
             //   vertexCount flags material smoothGroup (i0 i1 i2 ...)
@@ -929,6 +1307,9 @@ private:
             while (!Check(An8TokenKind::End) &&
                    !Check(An8TokenKind::RBrace) &&
                    !Check(An8TokenKind::LParen)) {
+                if (Check(An8TokenKind::Number)) {
+                    faceHeader.push_back(static_cast<int>(current_.number));
+                }
                 Advance();
             }
 
@@ -938,6 +1319,9 @@ private:
             }
 
             An8Face face = ParseFacePointData();
+            if (faceHeader.size() >= 2) {
+                face.materialIndex = faceHeader[1];
+            }
 
             Expect(An8TokenKind::RParen, "expected ')' after face indices");
 
@@ -965,20 +1349,20 @@ private:
                    Check(An8TokenKind::LParen)) {
                 Advance(); // point-data tuple
 
-                bool capturedPointIndex = false;
+                int pointIndex = -1;
+                int texcoordIndex = -1;
+                int numericSlot = 0;
                 while (!Check(An8TokenKind::End) &&
                        !Check(An8TokenKind::RBrace) &&
                        !Check(An8TokenKind::RParen)) {
                     if (Check(An8TokenKind::Number)) {
                         const int index = ReadInt("expected point-data index");
-                        if (!capturedPointIndex) {
-                            if (index >= 0) {
-                                face.indices.push_back(static_cast<uint32_t>(index));
-                            } else {
-                                Warning("negative face point index ignored");
-                            }
-                            capturedPointIndex = true;
+                        if (numericSlot == 0) {
+                            pointIndex = index;
+                        } else if (numericSlot == 1) {
+                            texcoordIndex = index;
                         }
+                        ++numericSlot;
                     } else if (Check(An8TokenKind::LParen)) {
                         SkipBalancedParens();
                     } else {
@@ -987,6 +1371,14 @@ private:
                 }
 
                 Expect(An8TokenKind::RParen, "expected ')' after face point-data tuple");
+                if (pointIndex >= 0) {
+                    face.indices.push_back(static_cast<uint32_t>(pointIndex));
+                    face.texcoordIndices.push_back(texcoordIndex >= 0
+                        ? static_cast<uint32_t>(texcoordIndex)
+                        : UINT32_MAX);
+                } else {
+                    Warning("negative face point index ignored");
+                }
             }
 
             return face;
@@ -999,6 +1391,7 @@ private:
                 const int index = ReadInt("expected face index");
                 if (index >= 0) {
                     face.indices.push_back(static_cast<uint32_t>(index));
+                    face.texcoordIndices.push_back(UINT32_MAX);
                 } else {
                     Warning("negative face index ignored");
                 }

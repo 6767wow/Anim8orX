@@ -31,8 +31,10 @@ namespace {
 using anim8orx::An8Document;
 using anim8orx::An8Face;
 using anim8orx::An8LoadResult;
+using anim8orx::An8Material;
 using anim8orx::An8Mesh;
 using anim8orx::An8Object;
+using anim8orx::An8Texture;
 using anim8orx::An8Vector3;
 using anim8orx::Vec3;
 using anim8orx::ViewportCamera;
@@ -123,12 +125,33 @@ struct UiLayout {
     RectI status;
 };
 
+struct LoadedTexture {
+    std::string name;
+    std::string sourcePath;
+    std::filesystem::path resolvedPath;
+    COLORREF averageColor = RGB(160, 170, 180);
+    bool loaded = false;
+};
+
+struct MeshFaceCache {
+    Vec3 center{};
+    Vec3 normal{};
+    bool hasNormal = false;
+    COLORREF baseColor = RGB(102, 132, 156);
+};
+
 struct MeshView {
     std::string displayName;
     std::string objectName;
     std::string meshName;
+    int topObjectIndex = 0;
+    std::vector<std::string> materialNames;
     std::vector<An8Vector3> points;
     std::vector<An8Face> faces;
+    std::vector<MeshFaceCache> faceCache;
+    Vec3 boundsMin{};
+    Vec3 boundsMax{};
+    bool hasBounds = false;
 };
 
 struct ProjectionPoint {
@@ -156,6 +179,9 @@ struct EditorState {
 
     An8Document document;
     std::vector<MeshView> meshes;
+    std::vector<LoadedTexture> loadedTextures;
+    size_t totalRenderableFaces = 0;
+    int activeObjectIndex = 0;
     std::vector<std::wstring> consoleLines;
     std::filesystem::path loadedPath;
 
@@ -563,6 +589,17 @@ void AddConsoleLine(EditorState& editor, const std::wstring& line) {
     }
 }
 
+std::string LowerAscii(std::string text) {
+    for (char& c : text) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return text;
+}
+
+bool EqualsNoCase(const std::string& a, const std::string& b) {
+    return LowerAscii(a) == LowerAscii(b);
+}
+
 bool StartsWithNoCase(const std::string& text, const char* prefix) {
     const size_t prefixLength = std::char_traits<char>::length(prefix);
     if (text.size() < prefixLength) {
@@ -602,7 +639,245 @@ std::string DisplayNameForMesh(const An8Object& object, const An8Mesh& mesh) {
     return object.name.empty() ? "Object" : object.name;
 }
 
-void CollectMeshesFromObject(const An8Object& object, std::vector<MeshView>& meshes) {
+bool ExistingFile(const std::filesystem::path& path) {
+    std::error_code error;
+    return std::filesystem::exists(path, error) && std::filesystem::is_regular_file(path, error);
+}
+
+std::filesystem::path ResolveTexturePath(const std::filesystem::path& documentDir, const std::string& sourcePath) {
+    if (sourcePath.empty()) {
+        return {};
+    }
+
+    std::filesystem::path source(sourcePath);
+    if (ExistingFile(source)) {
+        return source;
+    }
+
+    if (!source.is_absolute()) {
+        const std::filesystem::path local = documentDir / source;
+        if (ExistingFile(local)) {
+            return local;
+        }
+    }
+
+    const std::filesystem::path fileName = source.filename();
+    if (fileName.empty()) {
+        return {};
+    }
+
+    const std::vector<std::filesystem::path> candidates = {
+        documentDir / fileName,
+        documentDir / "Textures" / fileName,
+        documentDir / "Bump" / fileName,
+        documentDir / "Textures" / "Bump" / fileName
+    };
+
+    for (const std::filesystem::path& candidate : candidates) {
+        if (ExistingFile(candidate)) {
+            return candidate;
+        }
+    }
+
+    std::error_code error;
+    size_t visited = 0;
+    for (std::filesystem::recursive_directory_iterator it(documentDir, error), end;
+         !error && it != end && visited < 8000;
+         it.increment(error), ++visited) {
+        if (!it->is_regular_file(error)) {
+            continue;
+        }
+        if (EqualsNoCase(it->path().filename().string(), fileName.string())) {
+            return it->path();
+        }
+    }
+
+    return {};
+}
+
+COLORREF AverageImageColor(const std::filesystem::path& path, bool& loaded) {
+    loaded = false;
+    Gdiplus::Bitmap bitmap(path.wstring().c_str());
+    if (bitmap.GetLastStatus() != Gdiplus::Ok) {
+        return RGB(160, 170, 180);
+    }
+
+    const UINT width = bitmap.GetWidth();
+    const UINT height = bitmap.GetHeight();
+    if (width == 0 || height == 0) {
+        return RGB(160, 170, 180);
+    }
+
+    const UINT stepX = std::max<UINT>(1, width / 64);
+    const UINT stepY = std::max<UINT>(1, height / 64);
+    unsigned long long r = 0;
+    unsigned long long g = 0;
+    unsigned long long b = 0;
+    unsigned long long weight = 0;
+
+    for (UINT y = 0; y < height; y += stepY) {
+        for (UINT x = 0; x < width; x += stepX) {
+            Gdiplus::Color pixel;
+            if (bitmap.GetPixel(x, y, &pixel) != Gdiplus::Ok || pixel.GetA() < 8) {
+                continue;
+            }
+            const unsigned int alpha = pixel.GetA();
+            r += static_cast<unsigned long long>(pixel.GetR()) * alpha;
+            g += static_cast<unsigned long long>(pixel.GetG()) * alpha;
+            b += static_cast<unsigned long long>(pixel.GetB()) * alpha;
+            weight += alpha;
+        }
+    }
+
+    if (weight == 0) {
+        return RGB(160, 170, 180);
+    }
+
+    loaded = true;
+    return RGB(
+        static_cast<int>(r / weight),
+        static_cast<int>(g / weight),
+        static_cast<int>(b / weight));
+}
+
+void LoadDocumentTextures(EditorState& editor, const std::filesystem::path& documentPath) {
+    editor.loadedTextures.clear();
+    const std::filesystem::path documentDir = documentPath.empty()
+        ? std::filesystem::current_path()
+        : documentPath.parent_path();
+
+    size_t loadedCount = 0;
+    for (const An8Texture& texture : editor.document.textures) {
+        LoadedTexture loaded;
+        loaded.name = texture.name;
+        loaded.sourcePath = texture.filePath;
+        loaded.resolvedPath = ResolveTexturePath(documentDir, texture.filePath);
+        if (!loaded.resolvedPath.empty()) {
+            loaded.averageColor = AverageImageColor(loaded.resolvedPath, loaded.loaded);
+        }
+        if (loaded.loaded) {
+            ++loadedCount;
+        }
+        editor.loadedTextures.push_back(std::move(loaded));
+    }
+
+    if (!editor.document.textures.empty()) {
+        AddConsoleLine(editor,
+            L"Textures: " + std::to_wstring(loadedCount) +
+            L"/" + std::to_wstring(editor.document.textures.size()) +
+            L" resolved.");
+    }
+}
+
+const LoadedTexture* FindLoadedTexture(const std::vector<LoadedTexture>& textures, const std::string& name) {
+    for (const LoadedTexture& texture : textures) {
+        if (EqualsNoCase(texture.name, name)) {
+            return &texture;
+        }
+    }
+    return nullptr;
+}
+
+const An8Material* FindMaterialByName(const std::vector<An8Material>& materials, const std::string& name) {
+    for (const An8Material& material : materials) {
+        if (EqualsNoCase(material.name, name)) {
+            return &material;
+        }
+    }
+    return nullptr;
+}
+
+COLORREF BlendColor(COLORREF a, COLORREF b, float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    const float inv = 1.0f - t;
+    return RGB(
+        static_cast<int>(GetRValue(a) * inv + GetRValue(b) * t),
+        static_cast<int>(GetGValue(a) * inv + GetGValue(b) * t),
+        static_cast<int>(GetBValue(a) * inv + GetBValue(b) * t));
+}
+
+COLORREF MaterialBaseColor(const An8Material* material, const std::vector<LoadedTexture>& textures) {
+    COLORREF color = RGB(102, 132, 156);
+    if (material != nullptr && material->diffuse.valid) {
+        color = RGB(material->diffuse.r, material->diffuse.g, material->diffuse.b);
+    }
+
+    if (material != nullptr && !material->textureName.empty()) {
+        const LoadedTexture* texture = FindLoadedTexture(textures, material->textureName);
+        if (texture != nullptr && texture->loaded &&
+            material->textureKind != "bumpmap" &&
+            material->textureKind != "normalmap") {
+            color = BlendColor(color, texture->averageColor, 0.65f);
+        }
+    }
+
+    return color;
+}
+
+COLORREF FaceMaterialColor(
+    const An8Mesh& mesh,
+    const An8Face& face,
+    const std::vector<An8Material>& materials,
+    const std::vector<LoadedTexture>& textures) {
+    std::string materialName;
+    if (face.materialIndex >= 0 && static_cast<size_t>(face.materialIndex) < mesh.materialNames.size()) {
+        materialName = mesh.materialNames[static_cast<size_t>(face.materialIndex)];
+    } else {
+        materialName = mesh.defaultMaterialName;
+    }
+
+    const An8Material* material = materialName.empty()
+        ? nullptr
+        : FindMaterialByName(materials, materialName);
+    return MaterialBaseColor(material, textures);
+}
+
+MeshFaceCache BuildFaceCache(
+    const An8Mesh& mesh,
+    const An8Face& face,
+    const std::vector<An8Material>& materials,
+    const std::vector<LoadedTexture>& textures) {
+    MeshFaceCache cache;
+    cache.baseColor = FaceMaterialColor(mesh, face, materials, textures);
+
+    int centerCount = 0;
+    for (uint32_t index : face.indices) {
+        if (index < mesh.points.size()) {
+            cache.center += Vec3{mesh.points[index].x, mesh.points[index].y, mesh.points[index].z};
+            ++centerCount;
+        }
+    }
+    if (centerCount > 0) {
+        cache.center = cache.center / static_cast<float>(centerCount);
+    }
+
+    if (face.indices.size() >= 3) {
+        const uint32_t ia = face.indices[0];
+        const uint32_t ib = face.indices[1];
+        const uint32_t ic = face.indices[2];
+        if (ia < mesh.points.size() && ib < mesh.points.size() && ic < mesh.points.size()) {
+            const An8Vector3& a = mesh.points[ia];
+            const An8Vector3& b = mesh.points[ib];
+            const An8Vector3& c = mesh.points[ic];
+            cache.normal = anim8orx::Normalize(anim8orx::Cross(
+                Vec3{b.x - a.x, b.y - a.y, b.z - a.z},
+                Vec3{c.x - a.x, c.y - a.y, c.z - a.z}));
+            cache.hasNormal = anim8orx::Length(cache.normal) > 0.0001f;
+        }
+    }
+
+    return cache;
+}
+
+void CollectMeshesFromObject(
+    const An8Object& object,
+    std::vector<MeshView>& meshes,
+    const std::vector<An8Material>& inheritedMaterials,
+    const std::vector<LoadedTexture>& textures,
+    int topObjectIndex) {
+    std::vector<An8Material> materialScope = inheritedMaterials;
+    materialScope.insert(materialScope.end(), object.materials.begin(), object.materials.end());
+
     for (const An8Mesh& mesh : object.meshes) {
         if (mesh.points.empty() || mesh.faces.empty()) {
             continue;
@@ -612,25 +887,82 @@ void CollectMeshesFromObject(const An8Object& object, std::vector<MeshView>& mes
         view.displayName = DisplayNameForMesh(object, mesh);
         view.objectName = object.name;
         view.meshName = mesh.name;
+        view.topObjectIndex = topObjectIndex;
+        view.materialNames = mesh.materialNames;
         view.points = mesh.points;
         view.faces = mesh.faces;
+        view.faceCache.reserve(mesh.faces.size());
+        for (const An8Face& face : mesh.faces) {
+            view.faceCache.push_back(BuildFaceCache(mesh, face, materialScope, textures));
+        }
+        for (const An8Vector3& point : view.points) {
+            const Vec3 p{point.x, point.y, point.z};
+            if (!view.hasBounds) {
+                view.boundsMin = p;
+                view.boundsMax = p;
+                view.hasBounds = true;
+            } else {
+                view.boundsMin.x = std::min(view.boundsMin.x, p.x);
+                view.boundsMin.y = std::min(view.boundsMin.y, p.y);
+                view.boundsMin.z = std::min(view.boundsMin.z, p.z);
+                view.boundsMax.x = std::max(view.boundsMax.x, p.x);
+                view.boundsMax.y = std::max(view.boundsMax.y, p.y);
+                view.boundsMax.z = std::max(view.boundsMax.z, p.z);
+            }
+        }
         meshes.push_back(std::move(view));
     }
 
     for (const An8Object& child : object.children) {
-        CollectMeshesFromObject(child, meshes);
+        CollectMeshesFromObject(child, meshes, materialScope, textures, topObjectIndex);
     }
 }
 
+bool ShouldDisplayMesh(const EditorState& editor, const MeshView& mesh);
+void SelectFirstVisibleMesh(EditorState& editor);
+
 void RebuildMeshViews(EditorState& editor) {
     editor.meshes.clear();
-    for (const An8Object& object : editor.document.objects) {
-        CollectMeshesFromObject(object, editor.meshes);
+    editor.totalRenderableFaces = 0;
+    const std::vector<An8Material> rootMaterials;
+    for (size_t objectIndex = 0; objectIndex < editor.document.objects.size(); ++objectIndex) {
+        CollectMeshesFromObject(
+            editor.document.objects[objectIndex],
+            editor.meshes,
+            rootMaterials,
+            editor.loadedTextures,
+            static_cast<int>(objectIndex));
+    }
+    for (const MeshView& mesh : editor.meshes) {
+        editor.totalRenderableFaces += mesh.faces.size();
     }
 
     editor.selectedMesh = editor.meshes.empty()
         ? -1
         : std::clamp(editor.selectedMesh, 0, static_cast<int>(editor.meshes.size()) - 1);
+    editor.activeObjectIndex = editor.document.objects.empty()
+        ? 0
+        : std::clamp(editor.activeObjectIndex, 0, static_cast<int>(editor.document.objects.size()) - 1);
+    SelectFirstVisibleMesh(editor);
+}
+
+bool ShouldDisplayMesh(const EditorState& editor, const MeshView& mesh) {
+    return editor.activeMode == 3 || mesh.topObjectIndex == editor.activeObjectIndex;
+}
+
+void SelectFirstVisibleMesh(EditorState& editor) {
+    if (editor.selectedMesh >= 0 && editor.selectedMesh < static_cast<int>(editor.meshes.size()) &&
+        ShouldDisplayMesh(editor, editor.meshes[static_cast<size_t>(editor.selectedMesh)])) {
+        return;
+    }
+
+    editor.selectedMesh = -1;
+    for (size_t i = 0; i < editor.meshes.size(); ++i) {
+        if (ShouldDisplayMesh(editor, editor.meshes[i])) {
+            editor.selectedMesh = static_cast<int>(i);
+            return;
+        }
+    }
 }
 
 void RecalculateSelectionBounds(EditorState& editor) {
@@ -645,6 +977,9 @@ void RecalculateSelectionBounds(EditorState& editor) {
     size_t pointCount = 0;
 
     for (const MeshView& mesh : editor.meshes) {
+        if (!ShouldDisplayMesh(editor, mesh)) {
+            continue;
+        }
         for (const An8Vector3& point : mesh.points) {
             minPoint.x = std::min(minPoint.x, point.x);
             minPoint.y = std::min(minPoint.y, point.y);
@@ -732,6 +1067,7 @@ void AddMeshObject(EditorState& editor, const std::string& objectName, An8Mesh m
     object.name = objectName;
     object.meshes.push_back(std::move(mesh));
     editor.document.objects.push_back(std::move(object));
+    editor.activeObjectIndex = static_cast<int>(editor.document.objects.size()) - 1;
     editor.selectedMesh = static_cast<int>(editor.meshes.size());
     RefreshDocumentView(editor, L"Added " + ToWide(objectName) + L".");
 }
@@ -1046,14 +1382,20 @@ bool LoadDocument(EditorState& editor, const std::filesystem::path& requestedPat
         if (result.ok && !result.document.objects.empty()) {
             editor.document = result.document;
             editor.loadedPath = path;
+            editor.activeObjectIndex = 0;
+            editor.selectedMesh = 0;
             AddConsoleLine(editor, L"Loaded .an8 file: " + path.wstring());
+            LoadDocumentTextures(editor, path);
 
             for (const std::string& warning : result.warnings) {
                 AddConsoleLine(editor, L"Warning: " + ToWide(warning));
             }
         } else {
             editor.document = BuildFallbackCubeDocument();
+            editor.loadedTextures.clear();
             editor.loadedPath.clear();
+            editor.activeObjectIndex = 0;
+            editor.selectedMesh = 0;
             AddConsoleLine(editor, L"Could not load requested .an8 file. Using built-in cube.");
             for (const std::string& error : result.errors) {
                 AddConsoleLine(editor, L"Error: " + ToWide(error));
@@ -1061,13 +1403,20 @@ bool LoadDocument(EditorState& editor, const std::filesystem::path& requestedPat
         }
     } else {
         editor.document = BuildFallbackCubeDocument();
+        editor.loadedTextures.clear();
         editor.loadedPath.clear();
+        editor.activeObjectIndex = 0;
+        editor.selectedMesh = 0;
         AddConsoleLine(editor, L"No bundled .an8 sample found. Using built-in cube.");
     }
 
     RebuildMeshViews(editor);
     if (editor.meshes.empty()) {
         AddConsoleLine(editor, L"Loaded document contains no mesh geometry Anim8orX can render yet.");
+    } else {
+        AddConsoleLine(editor,
+            L"Renderable meshes: " + std::to_wstring(editor.meshes.size()) +
+            L", faces: " + std::to_wstring(editor.totalRenderableFaces) + L".");
     }
     RecalculateSelectionBounds(editor);
     SetViewportView(editor, ViewMode::Perspective);
@@ -1278,7 +1627,10 @@ bool SaveDocument(EditorState& editor) {
 
 void NewDefaultDocument(EditorState& editor) {
     editor.document = BuildFallbackCubeDocument();
+    editor.loadedTextures.clear();
     editor.loadedPath.clear();
+    editor.activeObjectIndex = 0;
+    editor.selectedMesh = 0;
     RebuildMeshViews(editor);
     RecalculateSelectionBounds(editor);
     SetViewportView(editor, ViewMode::Perspective);
@@ -1706,11 +2058,34 @@ void DrawHierarchy(HDC dc, const EditorState& editor) {
     DrawPanelHeader(dc, editor, panel, L"Hierarchy");
 
     int y = panel.y + 40;
-    Text(dc, L"Scene", panel.x + 12, y, panel.w - 24, 22, Rgb(197, 206, 216), editor.boldFont);
+    Text(dc, editor.activeMode == 3 ? L"Scene Objects" : L"Objects", panel.x + 12, y, panel.w - 24, 22, Rgb(197, 206, 216), editor.boldFont);
     y += 26;
+
+    for (size_t i = 0; i < editor.document.objects.size(); ++i) {
+        const An8Object& object = editor.document.objects[i];
+        const bool selected = static_cast<int>(i) == editor.activeObjectIndex && editor.activeMode != 3;
+        RectI row{panel.x + 8, y, panel.w - 16, 28};
+        Fill(dc, row, selected ? Rgb(55, 50, 38) : Rgb(30, 33, 39));
+        Stroke(dc, row, selected ? Rgb(255, 140, 0) : Rgb(50, 55, 65));
+        std::wstring name = object.name.empty()
+            ? L"Object " + std::to_wstring(i + 1)
+            : ToWide(object.name);
+        Text(dc, L"[O] " + name, row.x + 8, row.y, row.w - 16, row.h, selected ? Rgb(255, 148, 0) : Rgb(226, 231, 237), editor.smallFont);
+        y += 31;
+        if (y > panel.y + panel.h - 64) {
+            break;
+        }
+    }
+
+    y += 4;
+    Text(dc, editor.activeMode == 3 ? L"Scene Meshes" : L"Object Meshes", panel.x + 12, y, panel.w - 24, 20, Rgb(166, 175, 187), editor.boldFont);
+    y += 24;
 
     for (size_t i = 0; i < editor.meshes.size(); ++i) {
         const MeshView& mesh = editor.meshes[i];
+        if (!ShouldDisplayMesh(editor, mesh)) {
+            continue;
+        }
         const bool selected = static_cast<int>(i) == editor.selectedMesh;
         RectI row{panel.x + 8, y, panel.w - 16, 48};
         Fill(dc, row, selected ? Rgb(48, 78, 88) : Rgb(30, 33, 39));
@@ -1809,6 +2184,12 @@ void DrawInspector(HDC dc, const EditorState& editor) {
     const MeshView* mesh = editor.selectedMesh >= 0 && editor.selectedMesh < static_cast<int>(editor.meshes.size())
         ? &editor.meshes[static_cast<size_t>(editor.selectedMesh)]
         : nullptr;
+    size_t loadedTextureCount = 0;
+    for (const LoadedTexture& texture : editor.loadedTextures) {
+        if (texture.loaded) {
+            ++loadedTextureCount;
+        }
+    }
 
     switch (editor.propertyPage) {
         case 0:
@@ -1833,7 +2214,7 @@ void DrawInspector(HDC dc, const EditorState& editor) {
             DrawCheckboxRow(dc, editor, x, y, L"Wireframe", editor.showWireframe); y += 22;
             DrawCheckboxRow(dc, editor, x, y, L"Flat Shaded", editor.flatShaded); y += 22;
             DrawCheckboxRow(dc, editor, x, y, L"Smooth Shaded", false); y += 22;
-            DrawCheckboxRow(dc, editor, x, y, L"Textured", false); y += 30;
+            DrawCheckboxRow(dc, editor, x, y, L"Textured", !editor.loadedTextures.empty()); y += 30;
             DrawSectionTitle(dc, editor, x, y, L"Camera");
             DrawInspectorRow(dc, editor, x, y, L"FOV", FormatFloat(editor.camera.verticalFovRadians / anim8orx::AX_DEG_TO_RAD)); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Near Clip", FormatFloat(editor.camera.nearPlane)); y += 24;
@@ -1843,18 +2224,18 @@ void DrawInspector(HDC dc, const EditorState& editor) {
 
         case 2:
             DrawSectionTitle(dc, editor, x, y, L"Material Editor");
-            DrawInspectorRow(dc, editor, x, y, L"Name", L"default_mat"); y += 24;
-            DrawInspectorRow(dc, editor, x, y, L"Ambient RGB", L"70, 70, 70"); y += 24;
-            DrawInspectorRow(dc, editor, x, y, L"Diffuse RGB", L"220, 180, 80"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Mesh", mesh ? ToWide(mesh->displayName) : L"<none>"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Slots", mesh ? std::to_wstring(mesh->materialNames.size()) : L"0"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Primary", mesh && !mesh->materialNames.empty() ? ToWide(mesh->materialNames.front()) : L"<default>"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Specular RGB", L"255, 255, 255"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Emissive RGB", L"0, 0, 0"); y += 24;
             DrawSliderRow(dc, editor, x, y, L"Brilliance", 0.45f, L"0.45"); y += 24;
             DrawSliderRow(dc, editor, x, y, L"Roughness", 0.30f, L"0.30"); y += 24;
             DrawSliderRow(dc, editor, x, y, L"Transparency", 0.00f, L"0.00"); y += 28;
             DrawSectionTitle(dc, editor, x, y, L"Texture Maps");
-            DrawInspectorRow(dc, editor, x, y, L"Diffuse Map", L"<none>"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Resolved", std::to_wstring(loadedTextureCount) + L"/" + std::to_wstring(editor.loadedTextures.size())); y += 24;
             DrawCheckboxRow(dc, editor, x, y, L"Lock Aspect Ratio", true); y += 22;
-            DrawInspectorRow(dc, editor, x, y, L"Bump Map", L"<none>"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Bump/Normal", loadedTextureCount > 0 ? L"loaded" : L"<none>"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Bump Amplitude", L"1.00"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Specular Map", L"<none>"); y += 24;
             DrawInspectorRow(dc, editor, x, y, L"Transparency Map", L"<none>"); y += 24;
@@ -2026,8 +2407,10 @@ COLORREF ScaleColor(COLORREF color, float scale) {
     return Rgb(r, g, b);
 }
 
-COLORREF FaceFillColor(bool selected, bool hasNormal, const Vec3& normal) {
-    const COLORREF base = selected ? Rgb(212, 151, 62) : Rgb(102, 132, 156);
+COLORREF FaceFillColor(COLORREF materialBase, bool selected, bool hasNormal, const Vec3& normal) {
+    const COLORREF base = selected
+        ? BlendColor(materialBase, Rgb(239, 189, 87), 0.35f)
+        : materialBase;
     if (!hasNormal) {
         return base;
     }
@@ -2051,8 +2434,21 @@ void DrawFilledPolygon(HDC dc, std::vector<POINT>& points, COLORREF fill) {
 }
 
 void DrawMeshes(HDC dc, const EditorState& editor) {
+    const bool navigationPreview = editor.leftMouseDown || editor.middleMouseDown || editor.rightMouseDown || editor.frameTimerActive;
+    const size_t faceBudget = navigationPreview ? 6000u : 14000u;
+    size_t visibleFaces = 0;
+    for (const MeshView& mesh : editor.meshes) {
+        if (ShouldDisplayMesh(editor, mesh)) {
+            visibleFaces += mesh.faces.size();
+        }
+    }
+    const size_t totalFaces = std::max<size_t>(visibleFaces, 1u);
+
     for (size_t meshIndex = 0; meshIndex < editor.meshes.size(); ++meshIndex) {
         const MeshView& mesh = editor.meshes[meshIndex];
+        if (!ShouldDisplayMesh(editor, mesh)) {
+            continue;
+        }
         const bool selected = static_cast<int>(meshIndex) == editor.selectedMesh;
         const COLORREF color = selected ? Rgb(239, 189, 87) : Rgb(135, 161, 184);
         const int width = selected ? 2 : 1;
@@ -2063,6 +2459,12 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
         }
 
         constexpr size_t kSelectedWireFaceBudget = 2200;
+        const size_t meshBudget = totalFaces > faceBudget
+            ? std::max<size_t>(12u, (faceBudget * mesh.faces.size()) / totalFaces)
+            : mesh.faces.size();
+        const size_t faceStride = meshBudget > 0 && mesh.faces.size() > meshBudget
+            ? std::max<size_t>(1u, (mesh.faces.size() + meshBudget - 1u) / meshBudget)
+            : 1u;
         const bool drawEdges = editor.showWireframe ||
                                !editor.flatShaded ||
                                editor.showNormals ||
@@ -2087,43 +2489,23 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
             }
         }
 
-        for (const An8Face& face : mesh.faces) {
+        for (size_t faceIndex = 0; faceIndex < mesh.faces.size(); ++faceIndex) {
+            if (faceStride > 1u && (faceIndex % faceStride) != 0u) {
+                continue;
+            }
+
+            const An8Face& face = mesh.faces[faceIndex];
             if (face.indices.size() < 2) {
                 continue;
             }
 
-            Vec3 center{};
-            int centerCount = 0;
-            Vec3 normal{};
-            bool hasNormal = false;
-            if (face.indices.size() >= 3) {
-                const uint32_t ia = face.indices[0];
-                const uint32_t ib = face.indices[1];
-                const uint32_t ic = face.indices[2];
-                if (ia < mesh.points.size() && ib < mesh.points.size() && ic < mesh.points.size()) {
-                    const An8Vector3& a = mesh.points[ia];
-                    const An8Vector3& b = mesh.points[ib];
-                    const An8Vector3& c = mesh.points[ic];
-                    normal = anim8orx::Normalize(anim8orx::Cross(
-                        Vec3{b.x - a.x, b.y - a.y, b.z - a.z},
-                        Vec3{c.x - a.x, c.y - a.y, c.z - a.z}));
-                    hasNormal = anim8orx::Length(normal) > 0.0001f;
-                }
-            }
+            const MeshFaceCache* cache = faceIndex < mesh.faceCache.size() ? &mesh.faceCache[faceIndex] : nullptr;
+            const Vec3 normal = cache != nullptr ? cache->normal : Vec3{};
+            const Vec3 center = cache != nullptr ? cache->center : Vec3{};
+            const bool hasNormal = cache != nullptr && cache->hasNormal;
+            const bool hasCenter = cache != nullptr;
 
-            if (editor.backfaceCulling || editor.showNormals) {
-                for (uint32_t index : face.indices) {
-                    if (index < mesh.points.size()) {
-                        center += Vec3{mesh.points[index].x, mesh.points[index].y, mesh.points[index].z};
-                        ++centerCount;
-                    }
-                }
-                if (centerCount > 0) {
-                    center = center / static_cast<float>(centerCount);
-                }
-            }
-
-            if (editor.backfaceCulling && hasNormal && centerCount > 0) {
+            if (editor.backfaceCulling && hasNormal && hasCenter) {
                 const Vec3 toCamera = anim8orx::Normalize(editor.camera.position - center);
                 if (anim8orx::Dot(normal, toCamera) <= 0.0f) {
                     continue;
@@ -2142,7 +2524,8 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                 }
 
                 if (allVisible && polygonPoints.size() >= 3) {
-                    const COLORREF fill = FaceFillColor(selected, hasNormal, normal);
+                    const COLORREF base = cache != nullptr ? cache->baseColor : Rgb(102, 132, 156);
+                    const COLORREF fill = FaceFillColor(base, selected, hasNormal, normal);
                     DrawFilledPolygon(dc, polygonPoints, fill);
                 }
             }
@@ -2167,7 +2550,7 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
             }
 
             if (editor.showNormals && face.indices.size() >= 3) {
-                if (hasNormal && centerCount > 0) {
+                if (hasNormal && hasCenter) {
                     const Vec3 end = center + normal * 0.45f;
                     DrawWorldLine(dc, editor, {center.x, center.y, center.z}, {end.x, end.y, end.z}, Rgb(92, 174, 188), 1);
                 }
@@ -2514,7 +2897,35 @@ void ClickHierarchy(EditorState& editor, int x, int y) {
     }
 
     int rowY = panel.y + 66;
+    for (size_t objectIndex = 0; objectIndex < editor.document.objects.size(); ++objectIndex) {
+        RectI row{panel.x + 8, rowY, panel.w - 16, 28};
+        if (row.Contains(x, y)) {
+            editor.activeObjectIndex = static_cast<int>(objectIndex);
+            if (editor.activeMode == 3) {
+                editor.activeMode = 0;
+                editor.propertyPage = 3;
+            }
+            SelectFirstVisibleMesh(editor);
+            RecalculateSelectionBounds(editor);
+            editor.camera.FocusOn(editor.selectionCenter, editor.selectionRadius);
+            const std::wstring name = editor.document.objects[objectIndex].name.empty()
+                ? L"Object " + std::to_wstring(objectIndex + 1)
+                : ToWide(editor.document.objects[objectIndex].name);
+            AddConsoleLine(editor, L"Active object: " + name);
+            InvalidateRect(editor.hwnd, nullptr, FALSE);
+            return;
+        }
+        rowY += 31;
+        if (rowY > panel.y + panel.h - 64) {
+            break;
+        }
+    }
+
+    rowY += 28;
     for (size_t i = 0; i < editor.meshes.size(); ++i) {
+        if (!ShouldDisplayMesh(editor, editor.meshes[i])) {
+            continue;
+        }
         RectI row{panel.x + 8, rowY, panel.w - 16, 48};
         if (row.Contains(x, y)) {
             editor.selectedMesh = static_cast<int>(i);
@@ -2566,6 +2977,10 @@ void SetEditorMode(EditorState& editor, int mode) {
     editor.activeMode = std::clamp(mode, 0, 3);
     const int pages[] = {3, 4, 5, 6};
     editor.propertyPage = pages[editor.activeMode];
+    SelectFirstVisibleMesh(editor);
+    RecalculateSelectionBounds(editor);
+    editor.camera.FocusOn(editor.selectionCenter, editor.selectionRadius);
+    InvalidateRect(editor.hwnd, nullptr, FALSE);
 }
 
 void ClickPropertyDeck(EditorState& editor, int x, int y) {
