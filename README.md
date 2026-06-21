@@ -11,7 +11,7 @@ This repository currently contains the first editor-shell brick with an Anim8or-
 - Branded `wlogo.png` logo displayed in the app chrome and used as the window icon.
 - World-space 3D grid in the viewport with camera-projected floor/depth guides.
 - Real Hierarchy panel next to the tool rail with selectable top-level Anim8or objects and imported/generated mesh nodes.
-- Optimized retained GDI viewport shell with cached pens/brushes, persistent back buffer, cached projection basis, per-frame mesh vertex projection, cached face normals/material colors, viewport-only dirty repaints during navigation, filled face rendering by default, full still-frame face drawing, navigation-only preview budgets, and no idle repaint timer.
+- Optimized retained GDI viewport shell with cached pens/brushes, persistent back buffer, cached projection basis, per-frame mesh vertex projection, cached face normals/material colors, UV-sampled diffuse texture preview colors, painter-sorted filled faces, viewport-only dirty repaints during navigation, filled face rendering by default, full still-frame face drawing, navigation-only preview budgets, and no idle repaint timer.
 - Custom dark in-viewport view selector for All, Front, Back, Left, Right, Top, Bottom, Ortho, and Perspective.
 - File loading through `File > Open .an8...`, `Import`, drag-and-drop `.an8` files, command-line file arguments, or the bundled sample.
 - File saving through `File > Save`, `Save As...`, and `Export` for current mesh documents.

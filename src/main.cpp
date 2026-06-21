@@ -35,6 +35,7 @@ using anim8orx::An8Material;
 using anim8orx::An8Mesh;
 using anim8orx::An8Object;
 using anim8orx::An8Texture;
+using anim8orx::An8Vector2;
 using anim8orx::An8Vector3;
 using anim8orx::Vec3;
 using anim8orx::ViewportCamera;
@@ -130,6 +131,9 @@ struct LoadedTexture {
     std::string sourcePath;
     std::filesystem::path resolvedPath;
     COLORREF averageColor = RGB(160, 170, 180);
+    std::vector<COLORREF> pixels;
+    int width = 0;
+    int height = 0;
     bool loaded = false;
 };
 
@@ -138,6 +142,7 @@ struct MeshFaceCache {
     Vec3 normal{};
     bool hasNormal = false;
     COLORREF baseColor = RGB(102, 132, 156);
+    int textureIndex = -1;
 };
 
 struct MeshView {
@@ -147,6 +152,7 @@ struct MeshView {
     int topObjectIndex = 0;
     std::vector<std::string> materialNames;
     std::vector<An8Vector3> points;
+    std::vector<An8Vector2> texcoords;
     std::vector<An8Face> faces;
     std::vector<MeshFaceCache> faceCache;
     Vec3 boundsMin{};
@@ -156,6 +162,7 @@ struct MeshView {
 
 struct ProjectionPoint {
     POINT p{};
+    float depth = 0.0f;
     bool visible = false;
 };
 
@@ -695,33 +702,110 @@ std::filesystem::path ResolveTexturePath(const std::filesystem::path& documentDi
     return {};
 }
 
-COLORREF AverageImageColor(const std::filesystem::path& path, bool& loaded) {
-    loaded = false;
+float Wrap01(float value) {
+    value -= std::floor(value);
+    return value < 0.0f ? value + 1.0f : value;
+}
+
+COLORREF AverageColors(const std::vector<COLORREF>& colors) {
+    if (colors.empty()) {
+        return RGB(160, 170, 180);
+    }
+
+    unsigned long long r = 0;
+    unsigned long long g = 0;
+    unsigned long long b = 0;
+    for (COLORREF color : colors) {
+        r += GetRValue(color);
+        g += GetGValue(color);
+        b += GetBValue(color);
+    }
+
+    const unsigned long long count = static_cast<unsigned long long>(colors.size());
+    return RGB(
+        static_cast<int>(r / count),
+        static_cast<int>(g / count),
+        static_cast<int>(b / count));
+}
+
+COLORREF SampleTexture(const LoadedTexture& texture, float u, float v) {
+    if (!texture.loaded || texture.width <= 0 || texture.height <= 0 || texture.pixels.empty()) {
+        return texture.averageColor;
+    }
+
+    const float wrappedU = Wrap01(u);
+    float imageV = 1.0f - Wrap01(v);
+    if (imageV >= 1.0f) {
+        imageV = 0.99999f;
+    }
+
+    const int x = std::clamp(
+        static_cast<int>(wrappedU * static_cast<float>(texture.width - 1) + 0.5f),
+        0,
+        texture.width - 1);
+    const int y = std::clamp(
+        static_cast<int>(imageV * static_cast<float>(texture.height - 1) + 0.5f),
+        0,
+        texture.height - 1);
+    return texture.pixels[static_cast<size_t>(y * texture.width + x)];
+}
+
+bool LoadImageTexture(const std::filesystem::path& path, LoadedTexture& loaded) {
+    loaded.loaded = false;
+    loaded.pixels.clear();
+    loaded.width = 0;
+    loaded.height = 0;
+    loaded.averageColor = RGB(160, 170, 180);
+
     Gdiplus::Bitmap bitmap(path.wstring().c_str());
     if (bitmap.GetLastStatus() != Gdiplus::Ok) {
-        return RGB(160, 170, 180);
+        return false;
     }
 
     const UINT width = bitmap.GetWidth();
     const UINT height = bitmap.GetHeight();
     if (width == 0 || height == 0) {
-        return RGB(160, 170, 180);
+        return false;
     }
 
-    const UINT stepX = std::max<UINT>(1, width / 64);
-    const UINT stepY = std::max<UINT>(1, height / 64);
+    constexpr UINT kMaxPreviewTextureSize = 192;
+    const float scale = std::min(
+        1.0f,
+        static_cast<float>(kMaxPreviewTextureSize) / static_cast<float>(std::max(width, height)));
+    const UINT previewWidth = std::max<UINT>(1, static_cast<UINT>(std::round(width * scale)));
+    const UINT previewHeight = std::max<UINT>(1, static_cast<UINT>(std::round(height * scale)));
+
+    loaded.width = static_cast<int>(previewWidth);
+    loaded.height = static_cast<int>(previewHeight);
+    loaded.pixels.assign(static_cast<size_t>(previewWidth * previewHeight), RGB(160, 170, 180));
+
     unsigned long long r = 0;
     unsigned long long g = 0;
     unsigned long long b = 0;
     unsigned long long weight = 0;
+    std::vector<unsigned char> alphaMask(loaded.pixels.size(), 0);
 
-    for (UINT y = 0; y < height; y += stepY) {
-        for (UINT x = 0; x < width; x += stepX) {
+    for (UINT y = 0; y < previewHeight; ++y) {
+        const UINT sourceY = previewHeight > 1
+            ? static_cast<UINT>((static_cast<unsigned long long>(y) * (height - 1)) / (previewHeight - 1))
+            : 0;
+        for (UINT x = 0; x < previewWidth; ++x) {
+            const UINT sourceX = previewWidth > 1
+                ? static_cast<UINT>((static_cast<unsigned long long>(x) * (width - 1)) / (previewWidth - 1))
+                : 0;
             Gdiplus::Color pixel;
-            if (bitmap.GetPixel(x, y, &pixel) != Gdiplus::Ok || pixel.GetA() < 8) {
+            if (bitmap.GetPixel(sourceX, sourceY, &pixel) != Gdiplus::Ok) {
                 continue;
             }
+
+            const size_t pixelIndex = static_cast<size_t>(y * previewWidth + x);
+            loaded.pixels[pixelIndex] = RGB(pixel.GetR(), pixel.GetG(), pixel.GetB());
             const unsigned int alpha = pixel.GetA();
+            alphaMask[pixelIndex] = static_cast<unsigned char>(std::min<unsigned int>(alpha, 255u));
+            if (alpha < 8) {
+                continue;
+            }
+
             r += static_cast<unsigned long long>(pixel.GetR()) * alpha;
             g += static_cast<unsigned long long>(pixel.GetG()) * alpha;
             b += static_cast<unsigned long long>(pixel.GetB()) * alpha;
@@ -730,14 +814,22 @@ COLORREF AverageImageColor(const std::filesystem::path& path, bool& loaded) {
     }
 
     if (weight == 0) {
-        return RGB(160, 170, 180);
+        return false;
     }
 
-    loaded = true;
-    return RGB(
+    loaded.averageColor = RGB(
         static_cast<int>(r / weight),
         static_cast<int>(g / weight),
         static_cast<int>(b / weight));
+
+    for (size_t i = 0; i < loaded.pixels.size(); ++i) {
+        if (alphaMask[i] < 8) {
+            loaded.pixels[i] = loaded.averageColor;
+        }
+    }
+
+    loaded.loaded = true;
+    return true;
 }
 
 void LoadDocumentTextures(EditorState& editor, const std::filesystem::path& documentPath) {
@@ -753,7 +845,7 @@ void LoadDocumentTextures(EditorState& editor, const std::filesystem::path& docu
         loaded.sourcePath = texture.filePath;
         loaded.resolvedPath = ResolveTexturePath(documentDir, texture.filePath);
         if (!loaded.resolvedPath.empty()) {
-            loaded.averageColor = AverageImageColor(loaded.resolvedPath, loaded.loaded);
+            LoadImageTexture(loaded.resolvedPath, loaded);
         }
         if (loaded.loaded) {
             ++loadedCount;
@@ -769,13 +861,13 @@ void LoadDocumentTextures(EditorState& editor, const std::filesystem::path& docu
     }
 }
 
-const LoadedTexture* FindLoadedTexture(const std::vector<LoadedTexture>& textures, const std::string& name) {
-    for (const LoadedTexture& texture : textures) {
-        if (EqualsNoCase(texture.name, name)) {
-            return &texture;
+int FindLoadedTextureIndex(const std::vector<LoadedTexture>& textures, const std::string& name) {
+    for (size_t i = 0; i < textures.size(); ++i) {
+        if (EqualsNoCase(textures[i].name, name)) {
+            return static_cast<int>(i);
         }
     }
-    return nullptr;
+    return -1;
 }
 
 const An8Material* FindMaterialByName(const std::vector<An8Material>& materials, const std::string& name) {
@@ -796,25 +888,22 @@ COLORREF BlendColor(COLORREF a, COLORREF b, float t) {
         static_cast<int>(GetBValue(a) * inv + GetBValue(b) * t));
 }
 
-COLORREF MaterialBaseColor(const An8Material* material, const std::vector<LoadedTexture>& textures) {
-    COLORREF color = RGB(102, 132, 156);
-    if (material != nullptr && material->diffuse.valid) {
-        color = RGB(material->diffuse.r, material->diffuse.g, material->diffuse.b);
+bool IsDiffusePreviewTexture(const An8Material* material) {
+    if (material == nullptr || material->textureName.empty()) {
+        return false;
     }
 
-    if (material != nullptr && !material->textureName.empty()) {
-        const LoadedTexture* texture = FindLoadedTexture(textures, material->textureName);
-        if (texture != nullptr && texture->loaded &&
-            material->textureKind != "bumpmap" &&
-            material->textureKind != "normalmap") {
-            color = BlendColor(color, texture->averageColor, 0.65f);
-        }
-    }
-
-    return color;
+    const std::string kind = LowerAscii(material->textureKind);
+    return kind.empty() || (kind != "bumpmap" && kind != "normalmap");
 }
 
-COLORREF FaceMaterialColor(
+struct MaterialSurface {
+    COLORREF color = RGB(102, 132, 156);
+    int textureIndex = -1;
+    bool hasDiffuseColor = false;
+};
+
+MaterialSurface ResolveFaceMaterial(
     const An8Mesh& mesh,
     const An8Face& face,
     const std::vector<An8Material>& materials,
@@ -829,7 +918,71 @@ COLORREF FaceMaterialColor(
     const An8Material* material = materialName.empty()
         ? nullptr
         : FindMaterialByName(materials, materialName);
-    return MaterialBaseColor(material, textures);
+
+    MaterialSurface surface;
+    if (material != nullptr && material->diffuse.valid) {
+        surface.color = RGB(material->diffuse.r, material->diffuse.g, material->diffuse.b);
+        surface.hasDiffuseColor = true;
+    }
+
+    if (IsDiffusePreviewTexture(material)) {
+        const int textureIndex = FindLoadedTextureIndex(textures, material->textureName);
+        if (textureIndex >= 0 && static_cast<size_t>(textureIndex) < textures.size() && textures[textureIndex].loaded) {
+            surface.textureIndex = textureIndex;
+            surface.color = surface.hasDiffuseColor
+                ? BlendColor(surface.color, textures[textureIndex].averageColor, 0.65f)
+                : textures[textureIndex].averageColor;
+        }
+    }
+
+    return surface;
+}
+
+COLORREF FaceTextureColor(
+    const An8Mesh& mesh,
+    const An8Face& face,
+    const LoadedTexture& texture,
+    COLORREF materialColor,
+    bool hasDiffuseColor) {
+    if (mesh.texcoords.empty() || face.texcoordIndices.empty()) {
+        return hasDiffuseColor
+            ? BlendColor(materialColor, texture.averageColor, 0.70f)
+            : texture.averageColor;
+    }
+
+    std::vector<COLORREF> samples;
+    samples.reserve(face.texcoordIndices.size() + 1);
+    float centerU = 0.0f;
+    float centerV = 0.0f;
+    int validUvCount = 0;
+
+    for (uint32_t texcoordIndex : face.texcoordIndices) {
+        if (texcoordIndex == UINT32_MAX || texcoordIndex >= mesh.texcoords.size()) {
+            continue;
+        }
+
+        const An8Vector2& uv = mesh.texcoords[texcoordIndex];
+        centerU += uv.u;
+        centerV += uv.v;
+        ++validUvCount;
+        samples.push_back(SampleTexture(texture, uv.u, uv.v));
+    }
+
+    if (validUvCount == 0 || samples.empty()) {
+        return hasDiffuseColor
+            ? BlendColor(materialColor, texture.averageColor, 0.70f)
+            : texture.averageColor;
+    }
+
+    samples.push_back(SampleTexture(
+        texture,
+        centerU / static_cast<float>(validUvCount),
+        centerV / static_cast<float>(validUvCount)));
+
+    const COLORREF sampled = AverageColors(samples);
+    return hasDiffuseColor
+        ? BlendColor(materialColor, sampled, 0.85f)
+        : sampled;
 }
 
 MeshFaceCache BuildFaceCache(
@@ -838,7 +991,17 @@ MeshFaceCache BuildFaceCache(
     const std::vector<An8Material>& materials,
     const std::vector<LoadedTexture>& textures) {
     MeshFaceCache cache;
-    cache.baseColor = FaceMaterialColor(mesh, face, materials, textures);
+    const MaterialSurface material = ResolveFaceMaterial(mesh, face, materials, textures);
+    cache.baseColor = material.color;
+    cache.textureIndex = material.textureIndex;
+    if (material.textureIndex >= 0 && static_cast<size_t>(material.textureIndex) < textures.size()) {
+        cache.baseColor = FaceTextureColor(
+            mesh,
+            face,
+            textures[static_cast<size_t>(material.textureIndex)],
+            material.color,
+            material.hasDiffuseColor);
+    }
 
     int centerCount = 0;
     for (uint32_t index : face.indices) {
@@ -890,6 +1053,7 @@ void CollectMeshesFromObject(
         view.topObjectIndex = topObjectIndex;
         view.materialNames = mesh.materialNames;
         view.points = mesh.points;
+        view.texcoords = mesh.texcoords;
         view.faces = mesh.faces;
         view.faceCache.reserve(mesh.faces.size());
         for (const An8Face& face : mesh.faces) {
@@ -1804,6 +1968,7 @@ ProjectionPoint ProjectPoint(const EditorState& editor, const An8Vector3& point)
     const Vec3 world = {point.x, point.y, point.z};
     const Vec3 rel = world - editor.camera.position;
     const float z = anim8orx::Dot(rel, editor.projectionForward);
+    projected.depth = z;
     if (z <= 0.02f) {
         return projected;
     }
@@ -2434,8 +2599,18 @@ void DrawFilledPolygon(HDC dc, std::vector<POINT>& points, COLORREF fill) {
 }
 
 void DrawMeshes(HDC dc, const EditorState& editor) {
+    struct DrawFaceCommand {
+        size_t meshIndex = 0;
+        size_t faceIndex = 0;
+        float depth = 0.0f;
+        COLORREF fill = RGB(102, 132, 156);
+    };
+
     const bool navigationPreview = editor.leftMouseDown || editor.middleMouseDown || editor.rightMouseDown || editor.frameTimerActive;
     const size_t faceBudget = navigationPreview ? 6000u : static_cast<size_t>(-1);
+    const bool drawEdges = editor.showWireframe ||
+                           !editor.flatShaded ||
+                           editor.showNormals;
     size_t visibleFaces = 0;
     for (const MeshView& mesh : editor.meshes) {
         if (ShouldDisplayMesh(editor, mesh)) {
@@ -2444,38 +2619,31 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
     }
     const size_t totalFaces = std::max<size_t>(visibleFaces, 1u);
 
+    std::vector<std::vector<ProjectionPoint>> projectedByMesh(editor.meshes.size());
+    std::vector<DrawFaceCommand> fillCommands;
+    if (editor.flatShaded) {
+        fillCommands.reserve(std::min(visibleFaces, faceBudget));
+    }
+
+    bool selectedUsedCheapBounds = !drawEdges;
+    LONG selectedMinX = LONG_MAX;
+    LONG selectedMinY = LONG_MAX;
+    LONG selectedMaxX = LONG_MIN;
+    LONG selectedMaxY = LONG_MIN;
+
     for (size_t meshIndex = 0; meshIndex < editor.meshes.size(); ++meshIndex) {
         const MeshView& mesh = editor.meshes[meshIndex];
         if (!ShouldDisplayMesh(editor, mesh)) {
             continue;
         }
         const bool selected = static_cast<int>(meshIndex) == editor.selectedMesh;
-        const COLORREF color = selected ? Rgb(239, 189, 87) : Rgb(135, 161, 184);
-        const int width = selected ? 2 : 1;
-        std::vector<ProjectionPoint> projectedPoints;
+        std::vector<ProjectionPoint>& projectedPoints = projectedByMesh[meshIndex];
         projectedPoints.reserve(mesh.points.size());
         for (const An8Vector3& point : mesh.points) {
             projectedPoints.push_back(ProjectPoint(editor, point));
         }
 
-        const size_t meshBudget = totalFaces > faceBudget
-            ? std::max<size_t>(12u, (faceBudget * mesh.faces.size()) / totalFaces)
-            : mesh.faces.size();
-        const size_t faceStride = meshBudget > 0 && mesh.faces.size() > meshBudget
-            ? std::max<size_t>(1u, (mesh.faces.size() + meshBudget - 1u) / meshBudget)
-            : 1u;
-        const bool drawEdges = editor.showWireframe ||
-                               !editor.flatShaded ||
-                               editor.showNormals;
-        std::vector<POINT> polygonPoints;
-        polygonPoints.reserve(8);
-        bool selectedUsedCheapBounds = selected && !drawEdges;
-        LONG selectedMinX = LONG_MAX;
-        LONG selectedMinY = LONG_MAX;
-        LONG selectedMaxX = LONG_MIN;
-        LONG selectedMaxY = LONG_MIN;
-
-        if (selectedUsedCheapBounds) {
+        if (selected && selectedUsedCheapBounds) {
             for (const ProjectionPoint& point : projectedPoints) {
                 if (!point.visible) {
                     continue;
@@ -2487,13 +2655,20 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
             }
         }
 
+        const size_t meshBudget = totalFaces > faceBudget
+            ? std::max<size_t>(12u, (faceBudget * mesh.faces.size()) / totalFaces)
+            : mesh.faces.size();
+        const size_t faceStride = meshBudget > 0 && mesh.faces.size() > meshBudget
+            ? std::max<size_t>(1u, (mesh.faces.size() + meshBudget - 1u) / meshBudget)
+            : 1u;
+
         for (size_t faceIndex = 0; faceIndex < mesh.faces.size(); ++faceIndex) {
             if (faceStride > 1u && (faceIndex % faceStride) != 0u) {
                 continue;
             }
 
             const An8Face& face = mesh.faces[faceIndex];
-            if (face.indices.size() < 2) {
+            if (face.indices.size() < 3) {
                 continue;
             }
 
@@ -2510,61 +2685,144 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                 }
             }
 
-            if (editor.flatShaded && face.indices.size() >= 3) {
-                polygonPoints.clear();
+            if (editor.flatShaded) {
                 bool allVisible = true;
+                float depthSum = 0.0f;
                 for (uint32_t index : face.indices) {
                     if (index >= projectedPoints.size() || !projectedPoints[index].visible) {
                         allVisible = false;
                         break;
                     }
-                    polygonPoints.push_back(projectedPoints[index].p);
+                    depthSum += projectedPoints[index].depth;
                 }
 
-                if (allVisible && polygonPoints.size() >= 3) {
+                if (allVisible) {
                     const COLORREF base = cache != nullptr ? cache->baseColor : Rgb(102, 132, 156);
-                    const COLORREF fill = FaceFillColor(base, selected, hasNormal, normal);
-                    DrawFilledPolygon(dc, polygonPoints, fill);
+                    fillCommands.push_back({
+                        meshIndex,
+                        faceIndex,
+                        depthSum / static_cast<float>(face.indices.size()),
+                        FaceFillColor(base, selected, hasNormal, normal)
+                    });
                 }
             }
+        }
+    }
 
-            if (!drawEdges) {
+    if (!fillCommands.empty()) {
+        std::sort(fillCommands.begin(), fillCommands.end(), [](const DrawFaceCommand& a, const DrawFaceCommand& b) {
+            return a.depth > b.depth;
+        });
+
+        std::vector<POINT> polygonPoints;
+        polygonPoints.reserve(8);
+        for (const DrawFaceCommand& command : fillCommands) {
+            if (command.meshIndex >= editor.meshes.size()) {
                 continue;
             }
 
-            for (size_t i = 0; i < face.indices.size(); ++i) {
-                const uint32_t a = face.indices[i];
-                const uint32_t b = face.indices[(i + 1) % face.indices.size()];
-                if (a >= projectedPoints.size() || b >= projectedPoints.size()) {
+            const MeshView& mesh = editor.meshes[command.meshIndex];
+            if (command.faceIndex >= mesh.faces.size() || command.meshIndex >= projectedByMesh.size()) {
+                continue;
+            }
+
+            const An8Face& face = mesh.faces[command.faceIndex];
+            const std::vector<ProjectionPoint>& projectedPoints = projectedByMesh[command.meshIndex];
+            polygonPoints.clear();
+            bool allVisible = true;
+            for (uint32_t index : face.indices) {
+                if (index >= projectedPoints.size() || !projectedPoints[index].visible) {
+                    allVisible = false;
+                    break;
+                }
+                polygonPoints.push_back(projectedPoints[index].p);
+            }
+
+            if (allVisible && polygonPoints.size() >= 3) {
+                DrawFilledPolygon(dc, polygonPoints, command.fill);
+            }
+        }
+    }
+
+    if (drawEdges) {
+        for (size_t meshIndex = 0; meshIndex < editor.meshes.size(); ++meshIndex) {
+            const MeshView& mesh = editor.meshes[meshIndex];
+            if (!ShouldDisplayMesh(editor, mesh)) {
+                continue;
+            }
+
+            const std::vector<ProjectionPoint>& projectedPoints = projectedByMesh[meshIndex];
+            if (projectedPoints.empty() && !mesh.points.empty()) {
+                continue;
+            }
+
+            const bool selected = static_cast<int>(meshIndex) == editor.selectedMesh;
+            const COLORREF color = selected ? Rgb(239, 189, 87) : Rgb(135, 161, 184);
+            const int width = selected ? 2 : 1;
+            const size_t meshBudget = totalFaces > faceBudget
+                ? std::max<size_t>(12u, (faceBudget * mesh.faces.size()) / totalFaces)
+                : mesh.faces.size();
+            const size_t faceStride = meshBudget > 0 && mesh.faces.size() > meshBudget
+                ? std::max<size_t>(1u, (mesh.faces.size() + meshBudget - 1u) / meshBudget)
+                : 1u;
+
+            for (size_t faceIndex = 0; faceIndex < mesh.faces.size(); ++faceIndex) {
+                if (faceStride > 1u && (faceIndex % faceStride) != 0u) {
                     continue;
                 }
 
-                const ProjectionPoint& pa = projectedPoints[a];
-                const ProjectionPoint& pb = projectedPoints[b];
-                if (!pa.visible || !pb.visible) {
+                const An8Face& face = mesh.faces[faceIndex];
+                if (face.indices.size() < 2) {
                     continue;
                 }
-                DrawLine(dc, pa.p.x, pa.p.y, pb.p.x, pb.p.y, color, width);
-            }
 
-            if (editor.showNormals && face.indices.size() >= 3) {
-                if (hasNormal && hasCenter) {
-                    const Vec3 end = center + normal * 0.45f;
-                    DrawWorldLine(dc, editor, {center.x, center.y, center.z}, {end.x, end.y, end.z}, Rgb(92, 174, 188), 1);
+                const MeshFaceCache* cache = faceIndex < mesh.faceCache.size() ? &mesh.faceCache[faceIndex] : nullptr;
+                const Vec3 normal = cache != nullptr ? cache->normal : Vec3{};
+                const Vec3 center = cache != nullptr ? cache->center : Vec3{};
+                const bool hasNormal = cache != nullptr && cache->hasNormal;
+                const bool hasCenter = cache != nullptr;
+
+                if (editor.backfaceCulling && hasNormal && hasCenter) {
+                    const Vec3 toCamera = anim8orx::Normalize(editor.camera.position - center);
+                    if (anim8orx::Dot(normal, toCamera) <= 0.0f) {
+                        continue;
+                    }
+                }
+
+                for (size_t i = 0; i < face.indices.size(); ++i) {
+                    const uint32_t a = face.indices[i];
+                    const uint32_t b = face.indices[(i + 1) % face.indices.size()];
+                    if (a >= projectedPoints.size() || b >= projectedPoints.size()) {
+                        continue;
+                    }
+
+                    const ProjectionPoint& pa = projectedPoints[a];
+                    const ProjectionPoint& pb = projectedPoints[b];
+                    if (!pa.visible || !pb.visible) {
+                        continue;
+                    }
+                    DrawLine(dc, pa.p.x, pa.p.y, pb.p.x, pb.p.y, color, width);
+                }
+
+                if (editor.showNormals && face.indices.size() >= 3) {
+                    if (hasNormal && hasCenter) {
+                        const Vec3 end = center + normal * 0.45f;
+                        DrawWorldLine(dc, editor, {center.x, center.y, center.z}, {end.x, end.y, end.z}, Rgb(92, 174, 188), 1);
+                    }
                 }
             }
         }
+    }
 
-        if (selectedUsedCheapBounds &&
-            selectedMinX < selectedMaxX &&
-            selectedMinY < selectedMaxY) {
-            Stroke(dc, {
-                static_cast<int>(selectedMinX),
-                static_cast<int>(selectedMinY),
-                static_cast<int>(selectedMaxX - selectedMinX),
-                static_cast<int>(selectedMaxY - selectedMinY)
-            }, Rgb(239, 189, 87));
-        }
+    if (selectedUsedCheapBounds &&
+        selectedMinX < selectedMaxX &&
+        selectedMinY < selectedMaxY) {
+        Stroke(dc, {
+            static_cast<int>(selectedMinX),
+            static_cast<int>(selectedMinY),
+            static_cast<int>(selectedMaxX - selectedMinX),
+            static_cast<int>(selectedMaxY - selectedMinY)
+        }, Rgb(239, 189, 87));
     }
 }
 
