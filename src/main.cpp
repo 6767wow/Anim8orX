@@ -147,6 +147,7 @@ struct EditorState {
     HGDIOBJ backBufferOldBitmap = nullptr;
     int backBufferWidth = 0;
     int backBufferHeight = 0;
+    bool backBufferValid = false;
 
     An8Document document;
     std::vector<MeshView> meshes;
@@ -2172,6 +2173,7 @@ void ReleaseBackBuffer(EditorState& editor) {
     editor.backBufferOldBitmap = nullptr;
     editor.backBufferWidth = 0;
     editor.backBufferHeight = 0;
+    editor.backBufferValid = false;
 }
 
 bool EnsureBackBuffer(EditorState& editor, HDC windowDc) {
@@ -2201,25 +2203,61 @@ bool EnsureBackBuffer(EditorState& editor, HDC windowDc) {
     return editor.backBufferOldBitmap != nullptr;
 }
 
+void InvalidateViewport(const EditorState& editor) {
+    if (editor.hwnd == nullptr) {
+        return;
+    }
+
+    RECT viewport = editor.layout.viewport.ToRECT();
+    InvalidateRect(editor.hwnd, &viewport, FALSE);
+}
+
+bool IsInsideRect(const RECT& inner, const RECT& outer) {
+    return inner.left >= outer.left &&
+           inner.top >= outer.top &&
+           inner.right <= outer.right &&
+           inner.bottom <= outer.bottom;
+}
+
+bool ShouldPaintViewportOnly(const EditorState& editor, const RECT& dirty) {
+    if (!editor.backBufferValid || editor.viewMenuOpen) {
+        return false;
+    }
+
+    const RECT viewport = editor.layout.viewport.ToRECT();
+    return IsInsideRect(dirty, viewport);
+}
+
 void PaintEditor(HWND hwnd, EditorState& editor) {
     PAINTSTRUCT ps{};
     HDC windowDc = BeginPaint(hwnd, &ps);
     const bool buffered = EnsureBackBuffer(editor, windowDc);
     HDC dc = buffered ? editor.backBufferDc : windowDc;
+    const bool viewportOnly = buffered && ShouldPaintViewportOnly(editor, ps.rcPaint);
 
-    Fill(dc, {0, 0, editor.width, editor.height}, Rgb(18, 20, 25));
-    DrawTopBar(dc, editor);
-    DrawToolBar(dc, editor);
-    DrawHierarchy(dc, editor);
-    UpdateProjectionCache(editor);
-    DrawViewport(dc, editor);
-    DrawInspector(dc, editor);
-    DrawConsole(dc, editor);
-    DrawStatus(dc, editor);
-    DrawViewportViewPopup(dc, editor);
+    if (viewportOnly) {
+        UpdateProjectionCache(editor);
+        DrawViewport(dc, editor);
+    } else {
+        Fill(dc, {0, 0, editor.width, editor.height}, Rgb(18, 20, 25));
+        DrawTopBar(dc, editor);
+        DrawToolBar(dc, editor);
+        DrawHierarchy(dc, editor);
+        UpdateProjectionCache(editor);
+        DrawViewport(dc, editor);
+        DrawInspector(dc, editor);
+        DrawConsole(dc, editor);
+        DrawStatus(dc, editor);
+        DrawViewportViewPopup(dc, editor);
+        editor.backBufferValid = buffered;
+    }
 
     if (buffered) {
-        BitBlt(windowDc, 0, 0, editor.width, editor.height, dc, 0, 0, SRCCOPY);
+        const int x = ps.rcPaint.left;
+        const int y = ps.rcPaint.top;
+        const int w = static_cast<int>(std::max<LONG>(0, ps.rcPaint.right - ps.rcPaint.left));
+        const int h = static_cast<int>(std::max<LONG>(0, ps.rcPaint.bottom - ps.rcPaint.top));
+        BitBlt(windowDc, x, y, w, h, dc, x, y, SRCCOPY);
     }
     EndPaint(hwnd, &ps);
 }
@@ -2315,14 +2353,14 @@ void CaptureViewportMouse(HWND hwnd, EditorState& editor, int x, int y) {
     SetCapture(hwnd);
     SetFocus(hwnd);
     StartFrameTimer(hwnd, editor);
-    InvalidateRect(hwnd, nullptr, FALSE);
+    InvalidateViewport(editor);
 }
 
 void ReleaseViewportMouse(EditorState& editor) {
     if (!editor.leftMouseDown && !editor.middleMouseDown && !editor.rightMouseDown) {
         ReleaseCapture();
         StopFrameTimer(editor.hwnd, editor);
-        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        InvalidateViewport(editor);
     }
 }
 
@@ -2611,7 +2649,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
         case WM_TIMER:
             if (wParam == kFrameTimerId) {
                 if (TickCamera(editor)) {
-                    InvalidateRect(hwnd, nullptr, FALSE);
+                    InvalidateViewport(editor);
                 }
                 StopFrameTimer(hwnd, editor);
             }
@@ -2847,7 +2885,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             editor.viewportActive = editor.layout.viewport.Contains(x, y) || editor.leftMouseDown || editor.middleMouseDown || editor.rightMouseDown;
             editor.lastMouse = POINT{x, y};
             if (wasViewportActive != editor.viewportActive) {
-                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateViewport(editor);
             }
             return 0;
         }
@@ -2886,7 +2924,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 editor.focusPressed = false;
                 ReleaseCapture();
                 StopFrameTimer(hwnd, editor);
-                InvalidateRect(hwnd, nullptr, FALSE);
+                InvalidateViewport(editor);
             }
             return 0;
 

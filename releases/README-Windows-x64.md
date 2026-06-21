@@ -19,6 +19,7 @@ Use it to verify:
 - World-space 3D grid and custom dark view selector.
 - Optimized idle behavior: the viewport frame timer sleeps when nothing is moving.
 - Optimized drawing path with cached GDI pens/brushes, persistent back buffer, cached camera projection basis, and one mesh vertex projection pass per frame.
+- Optimized navigation repaint path: camera movement invalidates and blits only the viewport rectangle instead of redrawing the whole UI shell.
 - Native `.an8` file loading for object/group/mesh and common primitive component chunks.
 - Object, group, mesh, and helper-node discovery.
 - Point parsing and Anim8or nested face point-data parsing.
