@@ -806,6 +806,10 @@ private:
             if (CheckIdentifier("rgb")) {
                 Advance();
                 ParseRgbChunk(material.diffuse);
+            } else if (CheckIdentifier("texturename") || CheckIdentifier("texture")) {
+                Advance();
+                ParseStringChunk(material.textureName, "expected '{' after diffuse texture name");
+                material.textureKind = "diffuse";
             } else {
                 SkipPropertyOrBlock();
             }
@@ -836,8 +840,12 @@ private:
 
         Expect(An8TokenKind::RBrace, "expected '}' after map");
         if (!textureName.empty()) {
-            material.textureName = textureName;
-            material.textureKind = ToLowerAscii(kind);
+            const std::string loweredKind = ToLowerAscii(kind);
+            if (material.textureName.empty() ||
+                (loweredKind != "bumpmap" && loweredKind != "normalmap")) {
+                material.textureName = textureName;
+                material.textureKind = loweredKind;
+            }
         }
     }
 

@@ -2435,7 +2435,7 @@ void DrawFilledPolygon(HDC dc, std::vector<POINT>& points, COLORREF fill) {
 
 void DrawMeshes(HDC dc, const EditorState& editor) {
     const bool navigationPreview = editor.leftMouseDown || editor.middleMouseDown || editor.rightMouseDown || editor.frameTimerActive;
-    const size_t faceBudget = navigationPreview ? 6000u : 14000u;
+    const size_t faceBudget = navigationPreview ? 6000u : static_cast<size_t>(-1);
     size_t visibleFaces = 0;
     for (const MeshView& mesh : editor.meshes) {
         if (ShouldDisplayMesh(editor, mesh)) {
@@ -2458,7 +2458,6 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
             projectedPoints.push_back(ProjectPoint(editor, point));
         }
 
-        constexpr size_t kSelectedWireFaceBudget = 2200;
         const size_t meshBudget = totalFaces > faceBudget
             ? std::max<size_t>(12u, (faceBudget * mesh.faces.size()) / totalFaces)
             : mesh.faces.size();
@@ -2467,8 +2466,7 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
             : 1u;
         const bool drawEdges = editor.showWireframe ||
                                !editor.flatShaded ||
-                               editor.showNormals ||
-                               (selected && mesh.faces.size() <= kSelectedWireFaceBudget);
+                               editor.showNormals;
         std::vector<POINT> polygonPoints;
         polygonPoints.reserve(8);
         bool selectedUsedCheapBounds = selected && !drawEdges;

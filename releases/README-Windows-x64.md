@@ -18,9 +18,9 @@ Use it to verify:
 - RMB+mouse wheel fly-speed adjustment.
 - World-space 3D grid and custom dark view selector.
 - Optimized idle behavior: the viewport frame timer sleeps when nothing is moving.
-- Optimized drawing path with cached GDI pens/brushes, persistent back buffer, cached camera projection basis, one mesh vertex projection pass per frame, cached face normals/material colors, filled face rendering, adaptive large-file face budgets, and selected-mesh wire budget limits.
+- Optimized drawing path with cached GDI pens/brushes, persistent back buffer, cached camera projection basis, one mesh vertex projection pass per frame, cached face normals/material colors, filled face rendering, full still-frame face drawing, and navigation-only preview budgets.
 - Optimized navigation repaint path: camera movement invalidates and blits only the viewport rectangle instead of redrawing the whole UI shell.
-- Native `.an8` file loading for texture, material, object/group/mesh, subdivision control mesh, base orientation, UV, face material slot, and common primitive component chunks.
+- Native `.an8` file loading for texture, material diffuse map, material, object/group/mesh, subdivision control mesh, base orientation, UV, face material slot, and common primitive component chunks.
 - Object, group, mesh, and helper-node discovery.
 - Point parsing and Anim8or nested face point-data parsing.
 - Quad-to-triangle geometry preparation.
