@@ -2,11 +2,13 @@
 
 Anim8orX is a modern, open-source spiritual successor to the legacy 3D modeling workflow of Anim8or. The goal is a fast native C++ editor with a Vulkan viewport, a retained-mode object-oriented UI framework, Unity-style viewport controls, and native text-based `.an8` import.
 
-This repository currently contains the first editor-shell brick:
+This repository currently contains the first editor-shell brick with an Anim8or-style default workspace:
 
 - Native Windows GUI launch instead of a command-line harness.
-- Custom retained-style, UniverseLib-inspired layout with top tabs, hierarchy, inspector, console, toolbar, and bordered panels.
-- Anim8or-style Object, Figure, Sequence, and Scene mode tabs.
+- Native menu surface: File, Edit, Mode, Object, Options, View, Build, Scripts, Render, Window, About.
+- Anim8or-style compact command strip, Object/Figure/Sequence/Scene tabs, left modeling tool rail, gray grid viewport, orange active labels, and bottom object/status strip.
+- UniverseLib-inspired dock entry points for Explorer, Inspector, Console, Materials, and Timeline.
+- Tool surface for selection, transforms, primitive shapes, UV tools, rigging, keys, extrude, lathe, subdivision, camera, and light workflows.
 - Default cube viewport rendered at launch.
 - Self-contained C++17 viewport camera controller with RMB+WASD fly, Alt+LMB orbit, Alt+MMB pan, scroll dolly, and F focus support.
 - Self-contained C++17 `.an8` lexer/parser for objects, meshes, points, faces, and triangle-list geometry preparation.

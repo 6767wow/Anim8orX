@@ -5,7 +5,7 @@ if(POLICY CMP0091)
 endif()
 
 project(Anim8orX
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "Modern C++ and Vulkan spiritual successor to Anim8or"
     LANGUAGES CXX)
 

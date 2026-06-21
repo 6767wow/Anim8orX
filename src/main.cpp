@@ -34,6 +34,10 @@ using anim8orx::ViewportCameraInput;
 constexpr wchar_t kWindowClassName[] = L"Anim8orXEditorWindow";
 constexpr UINT_PTR kFrameTimerId = 1;
 constexpr int kFrameMillis = 16;
+constexpr int kMenuModeObject = 1001;
+constexpr int kMenuModeFigure = 1002;
+constexpr int kMenuModeSequence = 1003;
+constexpr int kMenuModeScene = 1004;
 
 struct RectI {
     int x = 0;
@@ -102,6 +106,7 @@ struct EditorState {
     float selectionRadius = 1.5f;
 
     int activeMode = 0;
+    int activeTool = 0;
     int selectedMesh = 0;
 };
 
@@ -276,6 +281,9 @@ bool LoadDocument(EditorState& editor, const std::filesystem::path& requestedPat
 
     RebuildMeshViews(editor);
     RecalculateSelectionBounds(editor);
+    editor.camera.SetLookAt(
+        {editor.selectionCenter.x, editor.selectionCenter.y, editor.selectionCenter.z + std::max(editor.selectionRadius * 3.0f, 4.0f)},
+        editor.selectionCenter);
     editor.camera.FocusOn(editor.selectionCenter, editor.selectionRadius);
     return !editor.meshes.empty();
 }
@@ -343,19 +351,16 @@ void Text(HDC dc, const std::wstring& text, int x, int y, int w, int h, COLORREF
 }
 
 void CalculateLayout(EditorState& editor) {
-    const int top = 38;
-    const int toolbar = 42;
-    const int console = std::max(116, std::min(162, editor.height / 5));
-    const int status = 24;
-    const int left = std::max(230, std::min(290, editor.width / 5));
-    const int right = std::max(280, std::min(340, editor.width / 4));
+    const int commandStrip = 28;
+    const int status = 20;
+    const int rail = 58;
 
-    editor.layout.topBar = {0, 0, editor.width, top};
-    editor.layout.leftPanel = {0, top, left, editor.height - top - console - status};
-    editor.layout.rightPanel = {editor.width - right, top, right, editor.height - top - console - status};
-    editor.layout.toolBar = {left, top, editor.width - left - right, toolbar};
-    editor.layout.viewport = {left, top + toolbar, editor.width - left - right, editor.height - top - toolbar - console - status};
-    editor.layout.console = {0, editor.height - console - status, editor.width, console};
+    editor.layout.topBar = {0, 0, editor.width, commandStrip};
+    editor.layout.leftPanel = {0, commandStrip, rail, editor.height - commandStrip - status};
+    editor.layout.toolBar = {0, 0, 0, 0};
+    editor.layout.rightPanel = {0, 0, 0, 0};
+    editor.layout.console = {0, 0, 0, 0};
+    editor.layout.viewport = {rail, commandStrip, editor.width - rail, editor.height - commandStrip - status};
     editor.layout.status = {0, editor.height - status, editor.width, status};
 }
 
@@ -405,50 +410,191 @@ void DrawPanelHeader(HDC dc, const EditorState& editor, const RectI& rect, const
     DrawLine(dc, rect.x, rect.y + 30, rect.x + rect.w, rect.y + 30, Rgb(74, 80, 91));
 }
 
-void DrawTopBar(HDC dc, const EditorState& editor) {
-    const RectI& bar = editor.layout.topBar;
-    Fill(dc, bar, Rgb(20, 22, 27));
-    Text(dc, L"Anim8orX", 14, 0, 128, bar.h, Rgb(245, 247, 250), editor.boldFont);
+void DrawSmallButton(HDC dc, const EditorState& editor, const RectI& rect, const std::wstring& label, bool active = false) {
+    Fill(dc, rect, active ? Rgb(50, 50, 45) : Rgb(43, 44, 45));
+    Stroke(dc, rect, active ? Rgb(255, 140, 0) : Rgb(88, 88, 88));
+    Text(dc, label, rect.x, rect.y, rect.w, rect.h, active ? Rgb(255, 148, 0) : Rgb(184, 184, 184), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
 
-    const wchar_t* modes[] = {L"Object", L"Figure", L"Sequence", L"Scene"};
-    int x = 132;
-    for (int i = 0; i < 4; ++i) {
-        const int tabW = 108;
-        RectI tab{x, 6, tabW, 26};
-        Fill(dc, tab, i == editor.activeMode ? Rgb(45, 79, 86) : Rgb(32, 35, 42));
-        Stroke(dc, tab, i == editor.activeMode ? Rgb(87, 176, 186) : Rgb(68, 74, 84));
-        Text(dc, modes[i], tab.x, tab.y, tab.w, tab.h, Rgb(235, 240, 244), editor.font, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        x += tabW + 8;
+void DrawIconGlyph(HDC dc, const RectI& rect, int glyph, COLORREF color) {
+    const int cx = rect.x + rect.w / 2;
+    const int cy = rect.y + rect.h / 2;
+    HPEN pen = CreatePenSolid(color, 1);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+
+    switch (glyph % 12) {
+        case 0:
+            MoveToEx(dc, rect.x + 6, rect.y + 5, nullptr);
+            LineTo(dc, rect.x + 7, rect.y + rect.h - 6);
+            LineTo(dc, rect.x + 14, rect.y + rect.h - 11);
+            LineTo(dc, rect.x + 10, rect.y + rect.h - 12);
+            LineTo(dc, rect.x + 16, rect.y + rect.h - 5);
+            break;
+        case 1:
+            Rectangle(dc, rect.x + 6, rect.y + 6, rect.x + rect.w - 6, rect.y + rect.h - 6);
+            break;
+        case 2:
+            Ellipse(dc, rect.x + 5, rect.y + 5, rect.x + rect.w - 5, rect.y + rect.h - 5);
+            break;
+        case 3:
+            MoveToEx(dc, rect.x + 5, cy, nullptr);
+            LineTo(dc, rect.x + rect.w - 5, cy);
+            MoveToEx(dc, cx, rect.y + 5, nullptr);
+            LineTo(dc, cx, rect.y + rect.h - 5);
+            break;
+        case 4:
+            MoveToEx(dc, rect.x + 6, rect.y + rect.h - 7, nullptr);
+            LineTo(dc, rect.x + rect.w - 7, rect.y + 6);
+            LineTo(dc, rect.x + rect.w - 8, rect.y + 14);
+            MoveToEx(dc, rect.x + rect.w - 7, rect.y + 6, nullptr);
+            LineTo(dc, rect.x + rect.w - 15, rect.y + 6);
+            break;
+        case 5:
+            Arc(dc, rect.x + 5, rect.y + 5, rect.x + rect.w - 5, rect.y + rect.h - 5, rect.x + rect.w - 6, cy, cx, rect.y + 5);
+            MoveToEx(dc, cx, rect.y + 5, nullptr);
+            LineTo(dc, cx + 4, rect.y + 5);
+            break;
+        case 6:
+            MoveToEx(dc, rect.x + 5, rect.y + rect.h - 6, nullptr);
+            LineTo(dc, rect.x + rect.w - 6, rect.y + 6);
+            Rectangle(dc, rect.x + 5, rect.y + 5, rect.x + rect.w - 8, rect.y + rect.h - 8);
+            break;
+        case 7:
+            Rectangle(dc, rect.x + 7, rect.y + 8, rect.x + rect.w - 7, rect.y + rect.h - 6);
+            MoveToEx(dc, rect.x + 7, rect.y + 8, nullptr);
+            LineTo(dc, rect.x + 13, rect.y + 3);
+            LineTo(dc, rect.x + rect.w - 4, rect.y + 3);
+            LineTo(dc, rect.x + rect.w - 7, rect.y + 8);
+            break;
+        case 8:
+            Ellipse(dc, rect.x + 4, rect.y + 5, rect.x + rect.w - 4, rect.y + rect.h - 5);
+            MoveToEx(dc, cx, rect.y + 5, nullptr);
+            LineTo(dc, cx, rect.y + rect.h - 5);
+            MoveToEx(dc, rect.x + 5, cy, nullptr);
+            LineTo(dc, rect.x + rect.w - 5, cy);
+            break;
+        case 9:
+            MoveToEx(dc, rect.x + 7, rect.y + rect.h - 7, nullptr);
+            LineTo(dc, cx, rect.y + 5);
+            LineTo(dc, rect.x + rect.w - 7, rect.y + rect.h - 7);
+            LineTo(dc, rect.x + 7, rect.y + rect.h - 7);
+            break;
+        case 10:
+            MoveToEx(dc, rect.x + 5, rect.y + rect.h - 6, nullptr);
+            LineTo(dc, rect.x + 9, rect.y + 6);
+            LineTo(dc, rect.x + rect.w - 8, rect.y + 7);
+            LineTo(dc, rect.x + rect.w - 5, rect.y + rect.h - 6);
+            LineTo(dc, rect.x + 5, rect.y + rect.h - 6);
+            break;
+        default:
+            MoveToEx(dc, rect.x + 5, rect.y + rect.h - 5, nullptr);
+            LineTo(dc, cx, rect.y + 5);
+            LineTo(dc, rect.x + rect.w - 5, rect.y + rect.h - 5);
+            MoveToEx(dc, rect.x + 8, cy, nullptr);
+            LineTo(dc, rect.x + rect.w - 8, cy);
+            break;
     }
 
-    Text(dc, L"Native editor shell", bar.w - 226, 0, 208, bar.h, Rgb(157, 166, 178), editor.smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void DrawIconButton(HDC dc, const EditorState& editor, const RectI& rect, int glyph, bool active = false) {
+    (void)editor;
+    Fill(dc, rect, active ? Rgb(50, 43, 33) : Rgb(38, 39, 40));
+    Stroke(dc, rect, active ? Rgb(255, 140, 0) : Rgb(76, 76, 76));
+    DrawIconGlyph(dc, rect, glyph, active ? Rgb(255, 148, 0) : Rgb(168, 168, 168));
+}
+
+void DrawTopBar(HDC dc, const EditorState& editor) {
+    const RectI& bar = editor.layout.topBar;
+    Fill(dc, bar, Rgb(48, 48, 48));
+    DrawLine(dc, bar.x, bar.y + bar.h - 1, bar.x + bar.w, bar.y + bar.h - 1, Rgb(10, 10, 10));
+
+    int x = 4;
+    for (int i = 0; i < 15; ++i) {
+        DrawIconButton(dc, editor, {x, bar.y + 4, 20, 20}, i, i == editor.activeTool);
+        x += 23;
+        if (i == 5 || i == 9) {
+            x += 8;
+        }
+    }
+
+    x += 18;
+    for (int i = 0; i <= 7; ++i) {
+        Text(dc, std::to_wstring(i), x, bar.y + 1, 18, bar.h - 2, i == 0 ? Rgb(255, 148, 0) : Rgb(115, 115, 115), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        x += 19;
+    }
+
+    const wchar_t* modes[] = {L"Object", L"Figure", L"Sequence", L"Scene"};
+    int modeX = std::max(x + 24, bar.w - 238);
+    for (int i = 0; i < 4; ++i) {
+        const int tabW = i == 0 ? 50 : 62;
+        RectI tab{modeX, bar.y + 3, tabW, 22};
+        Fill(dc, tab, i == editor.activeMode ? Rgb(33, 33, 33) : Rgb(43, 43, 43));
+        Stroke(dc, tab, i == editor.activeMode ? Rgb(255, 140, 0) : Rgb(58, 58, 58));
+        Text(dc, modes[i], tab.x, tab.y, tab.w, tab.h, i == editor.activeMode ? Rgb(255, 148, 0) : Rgb(125, 125, 125), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        modeX += tabW + 4;
+    }
 }
 
 void DrawToolBar(HDC dc, const EditorState& editor) {
-    const RectI& bar = editor.layout.toolBar;
-    Fill(dc, bar, Rgb(29, 31, 37));
-    Stroke(dc, bar, Rgb(68, 74, 84));
+    const RectI& rail = editor.layout.leftPanel;
+    Fill(dc, rail, Rgb(43, 43, 43));
+    DrawLine(dc, rail.x + rail.w - 1, rail.y, rail.x + rail.w - 1, rail.y + rail.h, Rgb(5, 5, 5));
 
-    const wchar_t* workspaceTabs[] = {L"Viewport", L"Hierarchy", L"Inspector", L"Console"};
-    int x = bar.x + 10;
-    for (int i = 0; i < 4; ++i) {
-        RectI tab{x, bar.y + 7, 92, 28};
-        Fill(dc, tab, i == 0 ? Rgb(45, 79, 86) : Rgb(36, 39, 46));
-        Stroke(dc, tab, i == 0 ? Rgb(87, 176, 186) : Rgb(67, 73, 83));
-        Text(dc, workspaceTabs[i], tab.x, tab.y, tab.w, tab.h, Rgb(228, 233, 238), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        x += tab.w + 7;
-    }
+    struct ToolGroup {
+        const wchar_t* title;
+        int count;
+        int firstGlyph;
+    };
 
-    DrawLine(dc, x + 4, bar.y + 9, x + 4, bar.y + bar.h - 9, Rgb(70, 76, 86));
-    x += 18;
+    const ToolGroup groups[] = {
+        {L"Mode", 4, 0},
+        {L"Coord", 4, 3},
+        {L"Axis", 3, 8},
+        {L"Tools", 10, 0},
+        {L"UV", 2, 6},
+        {L"Shapes", 9, 7},
+        {L"Rig", 4, 10},
+        {L"Keys", 4, 4}
+    };
 
-    const wchar_t* tools[] = {L"Select", L"Move", L"Rotate", L"Scale", L"Extrude", L"Lathe", L"Subdivide"};
-    for (const wchar_t* tool : tools) {
-        RectI button{x, bar.y + 8, 76, 26};
-        Fill(dc, button, wcscmp(tool, L"Select") == 0 ? Rgb(64, 73, 58) : Rgb(42, 45, 52));
-        Stroke(dc, button, Rgb(78, 85, 96));
-        Text(dc, tool, button.x, button.y, button.w, button.h, Rgb(228, 232, 237), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        x += button.w + 8;
+    int y = rail.y + 2;
+    int toolIndex = 0;
+    for (const ToolGroup& group : groups) {
+        if (y + 18 >= rail.y + rail.h) {
+            break;
+        }
+
+        Fill(dc, {rail.x, y, rail.w - 1, 16}, Rgb(34, 34, 34));
+        Text(dc, group.title, rail.x + 2, y, rail.w - 4, 16, Rgb(164, 164, 164), editor.smallFont);
+        y += 18;
+
+        if (wcscmp(group.title, L"Axis") == 0) {
+            const wchar_t* axes[] = {L"X", L"Y", L"Z"};
+            for (int i = 0; i < 3; ++i) {
+                DrawSmallButton(dc, editor, {rail.x + 2 + i * 18, y, 17, 18}, axes[i], i == 0);
+            }
+            y += 23;
+            continue;
+        }
+
+        for (int i = 0; i < group.count; ++i) {
+            if (y + 22 >= rail.y + rail.h) {
+                break;
+            }
+
+            const int col = i % 2;
+            const int row = i / 2;
+            RectI button{rail.x + 4 + col * 27, y + row * 27, 22, 22};
+            DrawIconButton(dc, editor, button, group.firstGlyph + i, toolIndex == editor.activeTool);
+            ++toolIndex;
+        }
+
+        y += ((group.count + 1) / 2) * 27 + 6;
     }
 }
 
@@ -577,11 +723,22 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
 
 void DrawViewport(HDC dc, const EditorState& editor) {
     const RectI& viewport = editor.layout.viewport;
-    Fill(dc, viewport, Rgb(15, 17, 21));
-    Stroke(dc, viewport, editor.viewportActive ? Rgb(89, 170, 184) : Rgb(68, 74, 84));
+    Fill(dc, viewport, Rgb(64, 64, 64));
+    Stroke(dc, viewport, editor.viewportActive ? Rgb(255, 140, 0) : Rgb(22, 22, 22));
 
     HRGN clip = CreateRectRgn(viewport.x + 1, viewport.y + 1, viewport.x + viewport.w - 1, viewport.y + viewport.h - 1);
     SelectClipRgn(dc, clip);
+
+    const int major = 101;
+    const int minor = major / 2;
+    for (int x = viewport.x; x < viewport.x + viewport.w; x += minor) {
+        const bool isMajor = ((x - viewport.x) / minor) % 2 == 0;
+        DrawLine(dc, x, viewport.y, x, viewport.y + viewport.h, isMajor ? Rgb(105, 105, 105) : Rgb(82, 82, 82));
+    }
+    for (int y = viewport.y; y < viewport.y + viewport.h; y += minor) {
+        const bool isMajor = ((y - viewport.y) / minor) % 2 == 0;
+        DrawLine(dc, viewport.x, y, viewport.x + viewport.w, y, isMajor ? Rgb(105, 105, 105) : Rgb(82, 82, 82));
+    }
 
     DrawGridAndAxes(dc, editor);
     DrawMeshes(dc, editor);
@@ -589,9 +746,18 @@ void DrawViewport(HDC dc, const EditorState& editor) {
     SelectClipRgn(dc, nullptr);
     DeleteObject(clip);
 
-    Fill(dc, {viewport.x + 10, viewport.y + 10, 210, 28}, Rgb(22, 24, 29));
-    Stroke(dc, {viewport.x + 10, viewport.y + 10, 210, 28}, Rgb(65, 71, 81));
-    Text(dc, L"Perspective Viewport", viewport.x + 20, viewport.y + 10, 190, 28, Rgb(228, 233, 238), editor.smallFont);
+    Text(dc, L"Front", viewport.x + 16, viewport.y + 8, 120, 22, Rgb(255, 148, 0), editor.boldFont);
+
+    const int axisX = viewport.x + 22;
+    const int axisY = viewport.y + viewport.h - 42;
+    DrawLine(dc, axisX, axisY, axisX, axisY - 38, Rgb(255, 148, 0), 2);
+    DrawLine(dc, axisX, axisY, axisX + 38, axisY, Rgb(255, 148, 0), 2);
+    Text(dc, L"Y", axisX - 6, axisY - 55, 22, 18, Rgb(255, 148, 0), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    Text(dc, L"X", axisX + 34, axisY - 2, 22, 18, Rgb(255, 148, 0), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    Fill(dc, {viewport.x + viewport.w - 316, viewport.y + 8, 300, 24}, Rgb(47, 47, 47));
+    Stroke(dc, {viewport.x + viewport.w - 316, viewport.y + 8, 300, 24}, Rgb(88, 88, 88));
+    Text(dc, L"RMB+WASD fly  Alt+LMB orbit  F focus", viewport.x + viewport.w - 308, viewport.y + 8, 284, 24, Rgb(188, 188, 188), editor.smallFont);
 }
 
 void DrawConsole(HDC dc, const EditorState& editor) {
@@ -611,13 +777,28 @@ void DrawConsole(HDC dc, const EditorState& editor) {
 
 void DrawStatus(HDC dc, const EditorState& editor) {
     const RectI& status = editor.layout.status;
-    Fill(dc, status, Rgb(32, 35, 42));
-    std::wstring text = L"Mode: ";
-    const wchar_t* modes[] = {L"Object", L"Figure", L"Sequence", L"Scene"};
-    text += modes[editor.activeMode];
-    text += L"    Meshes: " + std::to_wstring(editor.meshes.size());
-    text += L"    Camera: Unity-style";
-    Text(dc, text, status.x + 12, status.y, status.w - 24, status.h, Rgb(203, 211, 220), editor.smallFont);
+    Fill(dc, status, Rgb(48, 48, 48));
+    DrawLine(dc, status.x, status.y, status.x + status.w, status.y, Rgb(5, 5, 5));
+
+    const wchar_t* modes[] = {L"Object editor", L"Figure editor", L"Sequence editor", L"Scene editor"};
+    Text(dc, modes[editor.activeMode], status.x + 3, status.y, 180, status.h, Rgb(255, 148, 0), editor.smallFont);
+
+    const wchar_t* dockTabs[] = {L"Explorer", L"Inspector", L"Console", L"Materials", L"Timeline"};
+    int x = 250;
+    for (int i = 0; i < 5; ++i) {
+        RectI tab{x, status.y + 2, 82, status.h - 4};
+        Stroke(dc, tab, Rgb(28, 28, 28));
+        Text(dc, dockTabs[i], tab.x, tab.y, tab.w, tab.h, Rgb(150, 150, 150), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        x += tab.w + 4;
+    }
+
+    std::wstring right = L"Object: ";
+    if (editor.selectedMesh >= 0 && editor.selectedMesh < static_cast<int>(editor.meshes.size())) {
+        right += ToWide(editor.meshes[static_cast<size_t>(editor.selectedMesh)].objectName);
+    } else {
+        right += L"none";
+    }
+    Text(dc, right, status.w - 260, status.y, 252, status.h, Rgb(255, 148, 0), editor.smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 }
 
 void PaintEditor(HWND hwnd, EditorState& editor) {
@@ -630,10 +811,7 @@ void PaintEditor(HWND hwnd, EditorState& editor) {
     Fill(dc, {0, 0, editor.width, editor.height}, Rgb(18, 20, 25));
     DrawTopBar(dc, editor);
     DrawToolBar(dc, editor);
-    DrawHierarchy(dc, editor);
     DrawViewport(dc, editor);
-    DrawInspector(dc, editor);
-    DrawConsole(dc, editor);
     DrawStatus(dc, editor);
 
     BitBlt(windowDc, 0, 0, editor.width, editor.height, dc, 0, 0, SRCCOPY);
@@ -713,22 +891,110 @@ void ClickHierarchy(EditorState& editor, int x, int y) {
     }
 }
 
+void ClickToolRail(EditorState& editor, int x, int y) {
+    const RectI& rail = editor.layout.leftPanel;
+    if (!rail.Contains(x, y)) {
+        return;
+    }
+
+    int scanY = rail.y + 2;
+    int toolIndex = 0;
+    const int groupCounts[] = {4, 4, 0, 10, 2, 9, 4, 4};
+    for (int group = 0; group < 8; ++group) {
+        scanY += 18;
+        if (group == 2) {
+            scanY += 23;
+            continue;
+        }
+
+        const int count = groupCounts[group];
+        for (int i = 0; i < count; ++i) {
+            const int col = i % 2;
+            const int row = i / 2;
+            RectI button{rail.x + 4 + col * 27, scanY + row * 27, 22, 22};
+            if (button.Contains(x, y)) {
+                editor.activeTool = toolIndex;
+                AddConsoleLine(editor, L"Tool selected.");
+                InvalidateRect(editor.hwnd, nullptr, FALSE);
+                return;
+            }
+            ++toolIndex;
+        }
+
+        scanY += ((count + 1) / 2) * 27 + 6;
+    }
+}
+
 void ClickTopBar(EditorState& editor, int x, int y) {
     if (!editor.layout.topBar.Contains(x, y)) {
         return;
     }
 
-    int tabX = 132;
+    const int barWidth = editor.layout.topBar.w;
+    int tabX = std::max(390, barWidth - 238);
     for (int i = 0; i < 4; ++i) {
-        RectI tab{tabX, 6, 108, 26};
+        const int tabW = i == 0 ? 50 : 62;
+        RectI tab{tabX, editor.layout.topBar.y + 3, tabW, 22};
         if (tab.Contains(x, y)) {
             editor.activeMode = i;
             AddConsoleLine(editor, L"Switched editor mode.");
             InvalidateRect(editor.hwnd, nullptr, FALSE);
             return;
         }
-        tabX += 116;
+        tabX += tabW + 4;
     }
+
+    int toolX = 4;
+    for (int i = 0; i < 15; ++i) {
+        RectI button{toolX, editor.layout.topBar.y + 4, 20, 20};
+        if (button.Contains(x, y)) {
+            editor.activeTool = i;
+            AddConsoleLine(editor, L"Command strip tool selected.");
+            InvalidateRect(editor.hwnd, nullptr, FALSE);
+            return;
+        }
+        toolX += 23;
+        if (i == 5 || i == 9) {
+            toolX += 8;
+        }
+    }
+}
+
+HMENU CreateAnim8orXMenu() {
+    HMENU menu = CreateMenu();
+
+    struct MenuSpec {
+        const wchar_t* name;
+        const wchar_t* items[12];
+    };
+
+    const MenuSpec specs[] = {
+        {L"File", {L"New", L"Open .an8...", L"Save", L"Save As...", L"Import", L"Export", L"Preferences", L"Exit", nullptr}},
+        {L"Edit", {L"Undo", L"Redo", L"Cut", L"Copy", L"Paste", L"Delete", L"Select All", L"Preferences", nullptr}},
+        {L"Mode", {L"Object", L"Figure", L"Sequence", L"Scene", nullptr}},
+        {L"Object", {L"New Mesh", L"Convert to Mesh", L"Join Solids", L"Subdivide Faces", L"Extrude", L"Lathe", L"Mirror", L"Smooth", nullptr}},
+        {L"Options", {L"Grid", L"Snapping", L"Show Axis", L"Show Normals", L"Backface Culling", L"Theme", nullptr}},
+        {L"View", {L"Front", L"Back", L"Left", L"Right", L"Top", L"Bottom", L"Perspective", L"Frame Selection", nullptr}},
+        {L"Build", {L"Add Cube", L"Add Sphere", L"Add Cylinder", L"Add Cone", L"Add Text", L"Add Bone", L"Add Camera", L"Add Light", nullptr}},
+        {L"Scripts", {L"Run Script...", L"Script Console", L"Reload Scripts", nullptr}},
+        {L"Render", {L"Preview Render", L"Render Settings", L"Materials", L"Lights", nullptr}},
+        {L"Window", {L"Explorer", L"Inspector", L"Console", L"Materials", L"Timeline", L"Reset Layout", nullptr}},
+        {L"About", {L"About Anim8orX", L"License", L"GitHub", nullptr}}
+    };
+
+    for (const MenuSpec& spec : specs) {
+        HMENU popup = CreatePopupMenu();
+        for (int i = 0; i < 12 && spec.items[i] != nullptr; ++i) {
+            UINT_PTR id = 2000 + static_cast<UINT_PTR>((spec.name[0] << 4) + i);
+            if (wcscmp(spec.name, L"Mode") == 0) {
+                id = i == 0 ? kMenuModeObject : i == 1 ? kMenuModeFigure : i == 2 ? kMenuModeSequence : kMenuModeScene;
+            }
+            AppendMenuW(popup, MF_STRING, id, spec.items[i]);
+        }
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(popup), spec.name);
+    }
+
+    return menu;
 }
 
 LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -768,6 +1034,27 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             PaintEditor(hwnd, editor);
             return 0;
 
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case kMenuModeObject:
+                    editor.activeMode = 0;
+                    break;
+                case kMenuModeFigure:
+                    editor.activeMode = 1;
+                    break;
+                case kMenuModeSequence:
+                    editor.activeMode = 2;
+                    break;
+                case kMenuModeScene:
+                    editor.activeMode = 3;
+                    break;
+                default:
+                    AddConsoleLine(editor, L"Menu command selected. Implementation pending.");
+                    break;
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+
         case WM_LBUTTONDOWN: {
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
@@ -776,7 +1063,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 CaptureViewportMouse(hwnd, editor, x, y);
             } else {
                 ClickTopBar(editor, x, y);
-                ClickHierarchy(editor, x, y);
+                ClickToolRail(editor, x, y);
             }
             return 0;
         }
@@ -934,6 +1221,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         return 1;
     }
 
+    SetMenu(hwnd, CreateAnim8orXMenu());
     ShowWindow(hwnd, showCommand);
     UpdateWindow(hwnd);
 

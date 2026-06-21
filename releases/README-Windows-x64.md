@@ -1,18 +1,20 @@
 # Anim8orX Windows x64 Test Build
 
-This is the first native Anim8orX editor-shell build.
+This is the native Anim8orX editor-shell build with an Anim8or-style default workspace.
 
 Use it to verify:
 
 - Default GUI launch.
-- UniverseLib-style hierarchy, inspector, console, and tabbed editor layout.
+- Native Anim8or-like menu bar and compact command strip.
+- Slim left modeling rail with mode, coordinate, axis, tool, UV, shape, rig, and key groups.
 - Anim8or-style Object, Figure, Sequence, and Scene modes.
+- UniverseLib-style dock entry points for Explorer, Inspector, Console, Materials, and Timeline.
 - Unity-style viewport camera input path.
 - Native `.an8` file loading.
 - Object and mesh discovery.
 - Point and face parsing.
 - Quad-to-triangle geometry preparation.
-- Default cube wireframe viewport.
+- Default cube wireframe in a gray grid viewport.
 
 ## Run
 
