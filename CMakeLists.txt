@@ -5,7 +5,7 @@ if(POLICY CMP0091)
 endif()
 
 project(Anim8orX
-    VERSION 0.1.1
+    VERSION 0.2.0
     DESCRIPTION "Modern C++ and Vulkan spiritual successor to Anim8or"
     LANGUAGES CXX)
 
@@ -17,10 +17,10 @@ target_include_directories(anim8orx_core INTERFACE
     $<INSTALL_INTERFACE:include>)
 target_compile_features(anim8orx_core INTERFACE cxx_std_17)
 
-add_executable(anim8orx_app
+add_executable(anim8orx_app WIN32
     src/main.cpp)
 set_target_properties(anim8orx_app PROPERTIES OUTPUT_NAME "Anim8orX")
-target_link_libraries(anim8orx_app PRIVATE anim8orx_core)
+target_link_libraries(anim8orx_app PRIVATE anim8orx_core user32 gdi32 shell32)
 
 if(MSVC)
     target_compile_options(anim8orx_app PRIVATE /W4 /permissive-)

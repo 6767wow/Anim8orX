@@ -1,14 +1,18 @@
-# Anim8orX v0.1.0 Windows x64 Test Build
+# Anim8orX Windows x64 Test Build
 
-This is the first Anim8orX foundation build. It is not the full Vulkan editor yet.
+This is the first native Anim8orX editor-shell build.
 
 Use it to verify:
 
+- Default GUI launch.
+- UniverseLib-style hierarchy, inspector, console, and tabbed editor layout.
+- Anim8or-style Object, Figure, Sequence, and Scene modes.
+- Unity-style viewport camera input path.
 - Native `.an8` file loading.
 - Object and mesh discovery.
 - Point and face parsing.
 - Quad-to-triangle geometry preparation.
-- View/projection camera math initialization.
+- Default cube wireframe viewport.
 
 ## Run
 
@@ -19,15 +23,7 @@ Open PowerShell in this folder:
 ```
 
 You can also double-click `Anim8orX.exe`. With no command-line argument it
-loads the bundled cube sample and waits before closing.
-
-Expected output includes:
-
-```text
-Objects: 1
-points=8 faces=6 triangles=12
-Camera ready
-```
+opens the editor and loads the bundled cube sample.
 
 You can also pass another text-based `.an8` file path:
 
