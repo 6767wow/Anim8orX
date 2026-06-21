@@ -9,6 +9,7 @@ Use it to verify:
 - Slim left modeling rail with mode, coordinate, axis, tool, UV, shape, rig, and key groups.
 - Anim8or-style Object, Figure, Sequence, and Scene modes.
 - UniverseLib-style dock entry points for Explorer, Inspector, Console, Materials, and Timeline.
+- Anim8orX property deck pages for Setup, View, Material, Object, Figure, Sequence, Scene, and Render.
 - Unity-style viewport camera input path.
 - Native `.an8` file loading.
 - Object and mesh discovery.

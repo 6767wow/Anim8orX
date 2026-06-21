@@ -107,6 +107,7 @@ struct EditorState {
 
     int activeMode = 0;
     int activeTool = 0;
+    int propertyPage = 3;
     int selectedMesh = 0;
 };
 
@@ -351,16 +352,18 @@ void Text(HDC dc, const std::wstring& text, int x, int y, int w, int h, COLORREF
 }
 
 void CalculateLayout(EditorState& editor) {
-    const int commandStrip = 28;
+    const int commandStrip = 32;
     const int status = 20;
-    const int rail = 58;
+    const int rail = 62;
+    const int right = editor.width >= 980 ? 344 : 0;
+    const int bottom = editor.height >= 680 ? 128 : 92;
 
     editor.layout.topBar = {0, 0, editor.width, commandStrip};
     editor.layout.leftPanel = {0, commandStrip, rail, editor.height - commandStrip - status};
     editor.layout.toolBar = {0, 0, 0, 0};
-    editor.layout.rightPanel = {0, 0, 0, 0};
-    editor.layout.console = {0, 0, 0, 0};
-    editor.layout.viewport = {rail, commandStrip, editor.width - rail, editor.height - commandStrip - status};
+    editor.layout.rightPanel = {editor.width - right, commandStrip, right, editor.height - commandStrip - bottom - status};
+    editor.layout.console = {rail, editor.height - bottom - status, editor.width - rail, bottom};
+    editor.layout.viewport = {rail, commandStrip, editor.width - rail - right, editor.height - commandStrip - bottom - status};
     editor.layout.status = {0, editor.height - status, editor.width, status};
 }
 
@@ -625,11 +628,43 @@ void DrawHierarchy(HDC dc, const EditorState& editor) {
 }
 
 void DrawInspectorRow(HDC dc, const EditorState& editor, int x, int y, const std::wstring& label, const std::wstring& value) {
-    Text(dc, label, x, y, 96, 22, Rgb(171, 181, 192), editor.smallFont);
-    RectI field{x + 100, y + 2, 164, 20};
-    Fill(dc, field, Rgb(18, 20, 24));
+    Text(dc, label, x, y, 126, 22, Rgb(171, 181, 192), editor.smallFont);
+    RectI field{x + 130, y + 2, 178, 20};
+    Fill(dc, field, Rgb(20, 22, 25));
     Stroke(dc, field, Rgb(64, 70, 80));
     Text(dc, value, field.x + 7, field.y, field.w - 14, field.h, Rgb(230, 235, 240), editor.smallFont);
+}
+
+void DrawCheckboxRow(HDC dc, const EditorState& editor, int x, int y, const std::wstring& label, bool checked) {
+    RectI box{x, y + 4, 13, 13};
+    Fill(dc, box, Rgb(18, 20, 23));
+    Stroke(dc, box, checked ? Rgb(255, 148, 0) : Rgb(88, 88, 88));
+    if (checked) {
+        DrawLine(dc, box.x + 3, box.y + 7, box.x + 6, box.y + 10, Rgb(255, 148, 0), 2);
+        DrawLine(dc, box.x + 6, box.y + 10, box.x + 11, box.y + 3, Rgb(255, 148, 0), 2);
+    }
+    Text(dc, label, x + 20, y, 288, 22, Rgb(205, 210, 216), editor.smallFont);
+}
+
+void DrawSliderRow(HDC dc, const EditorState& editor, int x, int y, const std::wstring& label, float normalized, const std::wstring& value) {
+    Text(dc, label, x, y, 126, 22, Rgb(171, 181, 192), editor.smallFont);
+    RectI track{x + 130, y + 8, 116, 6};
+    Fill(dc, track, Rgb(22, 24, 28));
+    Stroke(dc, track, Rgb(64, 70, 80));
+    RectI fill{track.x + 1, track.y + 1, static_cast<int>((track.w - 2) * std::clamp(normalized, 0.0f, 1.0f)), track.h - 2};
+    Fill(dc, fill, Rgb(255, 148, 0));
+    Text(dc, value, x + 252, y, 56, 22, Rgb(230, 235, 240), editor.smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+}
+
+void DrawSectionTitle(HDC dc, const EditorState& editor, int x, int& y, const std::wstring& title) {
+    Fill(dc, {x, y, 310, 22}, Rgb(39, 43, 49));
+    Stroke(dc, {x, y, 310, 22}, Rgb(71, 78, 88));
+    Text(dc, L"v  " + title, x + 8, y, 294, 22, Rgb(238, 241, 245), editor.boldFont);
+    y += 28;
+}
+
+void DrawComboRow(HDC dc, const EditorState& editor, int x, int y, const std::wstring& label, const std::wstring& value) {
+    DrawInspectorRow(dc, editor, x, y, label, value + L"  v");
 }
 
 std::wstring FormatFloat(float value) {
@@ -642,47 +677,175 @@ std::wstring FormatFloat(float value) {
 
 void DrawInspector(HDC dc, const EditorState& editor) {
     const RectI& panel = editor.layout.rightPanel;
-    Fill(dc, panel, Rgb(26, 28, 34));
-    Stroke(dc, panel, Rgb(68, 74, 84));
-    DrawPanelHeader(dc, editor, panel, L"Inspector");
+    if (panel.w <= 0 || panel.h <= 0) {
+        return;
+    }
 
-    int y = panel.y + 42;
+    Fill(dc, panel, Rgb(24, 27, 32));
+    Stroke(dc, panel, Rgb(75, 82, 92));
+    DrawPanelHeader(dc, editor, panel, L"Anim8orX Properties");
+
+    HRGN clip = CreateRectRgn(panel.x + 1, panel.y + 1, panel.x + panel.w - 1, panel.y + panel.h - 1);
+    SelectClipRgn(dc, clip);
+
+    const wchar_t* tabs[] = {L"Setup", L"View", L"Material", L"Object", L"Figure", L"Sequence", L"Scene", L"Render"};
+    int tabX = panel.x + 8;
+    int tabY = panel.y + 36;
+    for (int i = 0; i < 8; ++i) {
+        RectI tab{tabX, tabY, i == 5 ? 72 : 58, 22};
+        Fill(dc, tab, i == editor.propertyPage ? Rgb(44, 45, 39) : Rgb(33, 36, 42));
+        Stroke(dc, tab, i == editor.propertyPage ? Rgb(255, 148, 0) : Rgb(61, 68, 78));
+        Text(dc, tabs[i], tab.x, tab.y, tab.w, tab.h, i == editor.propertyPage ? Rgb(255, 148, 0) : Rgb(168, 176, 188), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        tabX += tab.w + 4;
+        if (tabX + 64 > panel.x + panel.w - 8) {
+            tabX = panel.x + 8;
+            tabY += 26;
+        }
+    }
+
+    int y = tabY + 34;
+    const int x = panel.x + 14;
     const MeshView* mesh = editor.selectedMesh >= 0 && editor.selectedMesh < static_cast<int>(editor.meshes.size())
         ? &editor.meshes[static_cast<size_t>(editor.selectedMesh)]
         : nullptr;
 
-    Text(dc, L"Transform", panel.x + 12, y, panel.w - 24, 24, Rgb(236, 240, 244), editor.boldFont);
-    y += 30;
-    DrawInspectorRow(dc, editor, panel.x + 12, y, L"Position", L"0.00, 0.00, 0.00");
-    y += 26;
-    DrawInspectorRow(dc, editor, panel.x + 12, y, L"Rotation", L"0.00, 0.00, 0.00");
-    y += 26;
-    DrawInspectorRow(dc, editor, panel.x + 12, y, L"Scale", L"1.00, 1.00, 1.00");
-    y += 42;
+    switch (editor.propertyPage) {
+        case 0:
+            DrawSectionTitle(dc, editor, x, y, L"Global Preferences");
+            DrawInspectorRow(dc, editor, x, y, L"Grid Width", L"100.00"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Grid Snap", true); y += 22;
+            DrawInspectorRow(dc, editor, x, y, L"Grid Snap Size", L"0.25"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Angle Snap", true); y += 22;
+            DrawInspectorRow(dc, editor, x, y, L"Angle Snap Size", L"15.0 deg"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Backface Culling", false); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Auto-Save", true); y += 22;
+            DrawInspectorRow(dc, editor, x, y, L"Interval", L"5 min"); y += 30;
+            DrawSectionTitle(dc, editor, x, y, L"Viewport Overlays");
+            DrawCheckboxRow(dc, editor, x, y, L"Show Grid", true); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Show Axes", true); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Show Normals", false); y += 22;
+            DrawSliderRow(dc, editor, x, y, L"Normal Scale", 0.35f, L"0.35"); y += 24;
+            break;
 
-    Text(dc, L"Mesh Component", panel.x + 12, y, panel.w - 24, 24, Rgb(236, 240, 244), editor.boldFont);
-    y += 30;
+        case 1:
+            DrawSectionTitle(dc, editor, x, y, L"Display Mode Flags");
+            DrawCheckboxRow(dc, editor, x, y, L"Wireframe", true); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Flat Shaded", false); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Smooth Shaded", false); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Textured", false); y += 30;
+            DrawSectionTitle(dc, editor, x, y, L"Camera");
+            DrawInspectorRow(dc, editor, x, y, L"FOV", FormatFloat(editor.camera.verticalFovRadians / anim8orx::AX_DEG_TO_RAD)); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Near Clip", FormatFloat(editor.camera.nearPlane)); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Far Clip", FormatFloat(editor.camera.farPlane)); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Fly Speed", FormatFloat(editor.camera.flySpeed)); y += 24;
+            break;
 
-    if (mesh != nullptr) {
-        DrawInspectorRow(dc, editor, panel.x + 12, y, L"Object", ToWide(mesh->objectName));
-        y += 26;
-        DrawInspectorRow(dc, editor, panel.x + 12, y, L"Mesh", ToWide(mesh->meshName));
-        y += 26;
-        DrawInspectorRow(dc, editor, panel.x + 12, y, L"Points", std::to_wstring(mesh->points.size()));
-        y += 26;
-        DrawInspectorRow(dc, editor, panel.x + 12, y, L"Faces", std::to_wstring(mesh->faces.size()));
-        y += 26;
-        DrawInspectorRow(dc, editor, panel.x + 12, y, L"Triangles", std::to_wstring(anim8orx::BuildTriangleGeometry({mesh->meshName, mesh->points, mesh->faces}).indices.size() / 3));
-    } else {
-        Text(dc, L"No selection", panel.x + 12, y, panel.w - 24, 22, Rgb(166, 175, 187), editor.font);
+        case 2:
+            DrawSectionTitle(dc, editor, x, y, L"Material Editor");
+            DrawInspectorRow(dc, editor, x, y, L"Name", L"default_mat"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Ambient RGB", L"70, 70, 70"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Diffuse RGB", L"220, 180, 80"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Specular RGB", L"255, 255, 255"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Emissive RGB", L"0, 0, 0"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Brilliance", 0.45f, L"0.45"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Roughness", 0.30f, L"0.30"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Transparency", 0.00f, L"0.00"); y += 28;
+            DrawSectionTitle(dc, editor, x, y, L"Texture Maps");
+            DrawInspectorRow(dc, editor, x, y, L"Diffuse Map", L"<none>"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Lock Aspect Ratio", true); y += 22;
+            DrawInspectorRow(dc, editor, x, y, L"Bump Map", L"<none>"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Bump Amplitude", L"1.00"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Specular Map", L"<none>"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Transparency Map", L"<none>"); y += 24;
+            break;
+
+        case 3:
+            DrawSectionTitle(dc, editor, x, y, L"Primitive Parameters");
+            DrawInspectorRow(dc, editor, x, y, L"Cube Name", mesh ? ToWide(mesh->meshName) : L"cube"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"X/Y/Z Size", L"2.0, 2.0, 2.0"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"X/Y/Z Divs", L"1, 1, 1"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Sphere Radius", L"1.0"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Lat / Long", L"12 / 24"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Top Radius", L"1.0"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Bottom Radius", L"1.0"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Height", L"2.0"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Cap Top", true); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Cap Bottom", true); y += 28;
+            DrawSectionTitle(dc, editor, x, y, L"Modifiers");
+            DrawInspectorRow(dc, editor, x, y, L"Lathe Degrees", L"360.0 deg"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Lathe Segments", L"24"); y += 24;
+            DrawComboRow(dc, editor, x, y, L"Lathe Axis", L"Y"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Subdivision", L"1"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Smooth Angle", L"45.0 deg"); y += 24;
+            break;
+
+        case 4:
+            DrawSectionTitle(dc, editor, x, y, L"Bone Segment");
+            DrawInspectorRow(dc, editor, x, y, L"Name", L"bone01"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Length", L"1.00"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Inner Radius", L"0.25"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Outer Radius", L"0.75"); y += 30;
+            DrawSectionTitle(dc, editor, x, y, L"Degrees of Freedom");
+            for (const wchar_t* axis : {L"X Axis", L"Y Axis", L"Z Axis"}) {
+                DrawCheckboxRow(dc, editor, x, y, std::wstring(axis) + L" Rotation", true); y += 22;
+                DrawInspectorRow(dc, editor, x, y, std::wstring(axis) + L" Min", L"-90.0 deg"); y += 24;
+                DrawInspectorRow(dc, editor, x, y, std::wstring(axis) + L" Max", L"90.0 deg"); y += 24;
+            }
+            break;
+
+        case 5:
+            DrawSectionTitle(dc, editor, x, y, L"Sequence");
+            DrawInspectorRow(dc, editor, x, y, L"Name", L"idle_loop"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Frames", L"48"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"FPS", L"24"); y += 30;
+            DrawSectionTitle(dc, editor, x, y, L"Keyframe Interpolation");
+            DrawComboRow(dc, editor, x, y, L"Type", L"Spline"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Tension", 0.50f, L"0.50"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Continuity", 0.50f, L"0.50"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Bias", 0.50f, L"0.50"); y += 24;
+            break;
+
+        case 6:
+            DrawSectionTitle(dc, editor, x, y, L"Actor Instance");
+            DrawInspectorRow(dc, editor, x, y, L"Name", mesh ? ToWide(mesh->objectName) : L"object01"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Position", L"0.0, 0.0, 0.0"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Rotation", L"0.0, 0.0, 0.0"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Scale", L"1.0, 1.0, 1.0"); y += 30;
+            DrawSectionTitle(dc, editor, x, y, L"Camera Track");
+            DrawInspectorRow(dc, editor, x, y, L"Focal Length", L"35.0 mm"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"FOV", L"60.0 deg"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Near / Far", L"0.01 / 10000"); y += 30;
+            DrawSectionTitle(dc, editor, x, y, L"Light Source");
+            DrawComboRow(dc, editor, x, y, L"Type", L"Spotlight"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Color RGB", L"255, 244, 220"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Intensity", 0.65f, L"1.00"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Inner Cone", L"25.0 deg"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Outer Cone", L"45.0 deg"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Cast Shadows", true); y += 22;
+            DrawComboRow(dc, editor, x, y, L"Shadow Map", L"1024"); y += 24;
+            DrawSliderRow(dc, editor, x, y, L"Shadow Blur", 0.25f, L"0.25"); y += 24;
+            break;
+
+        default:
+            DrawSectionTitle(dc, editor, x, y, L"Render Output");
+            DrawComboRow(dc, editor, x, y, L"Renderer", L"ART Ray Tracer"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Width / Height", L"1280 / 720"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Lock Aspect Ratio", true); y += 22;
+            DrawInspectorRow(dc, editor, x, y, L"Start / End", L"0 / 48"); y += 24;
+            DrawInspectorRow(dc, editor, x, y, L"Frame Rate", L"24"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Anti-Aliasing", true); y += 22;
+            DrawComboRow(dc, editor, x, y, L"Samples", L"3x3"); y += 30;
+            DrawSectionTitle(dc, editor, x, y, L"ART Quality");
+            DrawCheckboxRow(dc, editor, x, y, L"Render Reflections", true); y += 22;
+            DrawInspectorRow(dc, editor, x, y, L"Max Ray Depth", L"4"); y += 24;
+            DrawCheckboxRow(dc, editor, x, y, L"Render Shadows", true); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Ambient Occlusion", true); y += 22;
+            DrawSliderRow(dc, editor, x, y, L"AO Factor", 0.45f, L"0.45"); y += 24;
+            break;
     }
 
-    y = panel.y + panel.h - 108;
-    Text(dc, L"Camera", panel.x + 12, y, panel.w - 24, 24, Rgb(236, 240, 244), editor.boldFont);
-    y += 30;
-    DrawInspectorRow(dc, editor, panel.x + 12, y, L"Yaw", FormatFloat(editor.camera.yawRadians / anim8orx::AX_DEG_TO_RAD));
-    y += 26;
-    DrawInspectorRow(dc, editor, panel.x + 12, y, L"Pitch", FormatFloat(editor.camera.pitchRadians / anim8orx::AX_DEG_TO_RAD));
+    SelectClipRgn(dc, nullptr);
+    DeleteObject(clip);
 }
 
 void DrawGridAndAxes(HDC dc, const EditorState& editor) {
@@ -812,6 +975,8 @@ void PaintEditor(HWND hwnd, EditorState& editor) {
     DrawTopBar(dc, editor);
     DrawToolBar(dc, editor);
     DrawViewport(dc, editor);
+    DrawInspector(dc, editor);
+    DrawConsole(dc, editor);
     DrawStatus(dc, editor);
 
     BitBlt(windowDc, 0, 0, editor.width, editor.height, dc, 0, 0, SRCCOPY);
@@ -925,6 +1090,38 @@ void ClickToolRail(EditorState& editor, int x, int y) {
     }
 }
 
+void SetEditorMode(EditorState& editor, int mode) {
+    editor.activeMode = std::clamp(mode, 0, 3);
+    const int pages[] = {3, 4, 5, 6};
+    editor.propertyPage = pages[editor.activeMode];
+}
+
+void ClickPropertyDeck(EditorState& editor, int x, int y) {
+    const RectI& panel = editor.layout.rightPanel;
+    if (!panel.Contains(x, y)) {
+        return;
+    }
+
+    int tabX = panel.x + 8;
+    int tabY = panel.y + 36;
+    for (int i = 0; i < 8; ++i) {
+        const int tabW = i == 5 ? 72 : 58;
+        RectI tab{tabX, tabY, tabW, 22};
+        if (tab.Contains(x, y)) {
+            editor.propertyPage = i;
+            AddConsoleLine(editor, L"Property page selected.");
+            InvalidateRect(editor.hwnd, nullptr, FALSE);
+            return;
+        }
+
+        tabX += tabW + 4;
+        if (tabX + 64 > panel.x + panel.w - 8) {
+            tabX = panel.x + 8;
+            tabY += 26;
+        }
+    }
+}
+
 void ClickTopBar(EditorState& editor, int x, int y) {
     if (!editor.layout.topBar.Contains(x, y)) {
         return;
@@ -936,7 +1133,7 @@ void ClickTopBar(EditorState& editor, int x, int y) {
         const int tabW = i == 0 ? 50 : 62;
         RectI tab{tabX, editor.layout.topBar.y + 3, tabW, 22};
         if (tab.Contains(x, y)) {
-            editor.activeMode = i;
+            SetEditorMode(editor, i);
             AddConsoleLine(editor, L"Switched editor mode.");
             InvalidateRect(editor.hwnd, nullptr, FALSE);
             return;
@@ -1037,16 +1234,16 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
                 case kMenuModeObject:
-                    editor.activeMode = 0;
+                    SetEditorMode(editor, 0);
                     break;
                 case kMenuModeFigure:
-                    editor.activeMode = 1;
+                    SetEditorMode(editor, 1);
                     break;
                 case kMenuModeSequence:
-                    editor.activeMode = 2;
+                    SetEditorMode(editor, 2);
                     break;
                 case kMenuModeScene:
-                    editor.activeMode = 3;
+                    SetEditorMode(editor, 3);
                     break;
                 default:
                     AddConsoleLine(editor, L"Menu command selected. Implementation pending.");
@@ -1064,6 +1261,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             } else {
                 ClickTopBar(editor, x, y);
                 ClickToolRail(editor, x, y);
+                ClickPropertyDeck(editor, x, y);
             }
             return 0;
         }

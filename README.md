@@ -7,8 +7,10 @@ This repository currently contains the first editor-shell brick with an Anim8or-
 - Native Windows GUI launch instead of a command-line harness.
 - Native menu surface: File, Edit, Mode, Object, Options, View, Build, Scripts, Render, Window, About.
 - Anim8or-style compact command strip, Object/Figure/Sequence/Scene tabs, left modeling tool rail, gray grid viewport, orange active labels, and bottom object/status strip.
-- UniverseLib-inspired dock entry points for Explorer, Inspector, Console, Materials, and Timeline.
+- Anim8orX-branded property deck with Setup, View, Material, Object, Figure, Sequence, Scene, and Render pages.
+- UniverseLib-inspired dock entry points and bottom dock for Explorer, Inspector, Console, Materials, and Timeline.
 - Tool surface for selection, transforms, primitive shapes, UV tools, rigging, keys, extrude, lathe, subdivision, camera, and light workflows.
+- Visible parameter surface for grid/snap preferences, viewport display flags, material shader values, primitive dimensions, modifier inputs, bone/DOF constraints, sequence interpolation, scene actor/camera/light controls, and render output options.
 - Default cube viewport rendered at launch.
 - Self-contained C++17 viewport camera controller with RMB+WASD fly, Alt+LMB orbit, Alt+MMB pan, scroll dolly, and F focus support.
 - Self-contained C++17 `.an8` lexer/parser for objects, meshes, points, faces, and triangle-list geometry preparation.
