@@ -163,8 +163,11 @@ public:
     float lookSensitivity = 0.0030f;
     float orbitSensitivity = 0.0045f;
     float flySpeed = 5.0f;
+    float minFlySpeed = 0.25f;
+    float maxFlySpeed = 250.0f;
     float fastFlyMultiplier = 4.0f;
     float scrollDollySensitivity = 0.12f;
+    float scrollSpeedSensitivity = 0.18f;
 
     ViewportCamera() {
         SetLookAt(position, focus);
@@ -228,6 +231,10 @@ public:
             return;
         }
 
+        if (in.rightMouseDown && std::abs(in.wheelDelta) > 0.0001f) {
+            AdjustFlySpeed(in.wheelDelta);
+        }
+
         if (in.altDown && in.leftMouseDown) {
             OrbitPixels(in.mouseDeltaX, in.mouseDeltaY);
         } else if (in.altDown && in.middleMouseDown) {
@@ -237,7 +244,7 @@ public:
             Fly(in);
         }
 
-        if (in.viewportHovered && std::abs(in.wheelDelta) > 0.0001f) {
+        if (in.viewportHovered && !in.rightMouseDown && std::abs(in.wheelDelta) > 0.0001f) {
             DollyWheel(in.wheelDelta);
         }
     }
@@ -284,6 +291,11 @@ private:
         const float scaled = std::max(orbitDistance, 0.25f) * scrollDollySensitivity;
         orbitDistance = std::max(0.05f, orbitDistance - wheelDelta * scaled);
         position = focus - Forward() * orbitDistance;
+    }
+
+    void AdjustFlySpeed(float wheelDelta) {
+        const float factor = std::pow(1.0f + scrollSpeedSensitivity, wheelDelta);
+        flySpeed = Clamp(flySpeed * factor, minFlySpeed, maxFlySpeed);
     }
 
     void Fly(const ViewportCameraInput& in) {

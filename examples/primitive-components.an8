@@ -1,0 +1,34 @@
+header {
+  version { "1.00" }
+}
+
+object {
+  "primitive_component_sample"
+  cube {
+    "wide_cube"
+    size { 2.50000 1.00000 1.50000 }
+    base {
+      origin { (-2.00000 0.00000 0.00000) }
+    }
+  }
+  sphere {
+    "round_sphere"
+    diameter { 1.60000 }
+    longlat { 8 16 }
+    base {
+      origin { (0.75000 0.00000 0.00000) }
+    }
+  }
+  cylinder {
+    "tapered_cylinder"
+    length { 2.20000 }
+    diameter { 1.10000 }
+    topdiameter { 0.30000 }
+    segments { 18 }
+    capstart { }
+    capend { }
+    base {
+      origin { (2.75000 0.00000 0.00000) }
+    }
+  }
+}

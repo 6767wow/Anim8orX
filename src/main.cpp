@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <filesystem>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -44,6 +46,31 @@ constexpr int kMenuModeScene = 1004;
 constexpr int kMenuFileNew = 1200;
 constexpr int kMenuFileOpen = 1201;
 constexpr int kMenuFileExit = 1202;
+constexpr int kMenuFileSave = 1203;
+constexpr int kMenuFileSaveAs = 1204;
+constexpr int kMenuFileImport = 1205;
+constexpr int kMenuFileExport = 1206;
+constexpr int kMenuEditDelete = 1210;
+constexpr int kMenuObjectSubdivide = 1220;
+constexpr int kMenuObjectExtrude = 1221;
+constexpr int kMenuObjectLathe = 1222;
+constexpr int kMenuObjectMirror = 1223;
+constexpr int kMenuObjectInset = 1224;
+constexpr int kMenuOptionGrid = 1240;
+constexpr int kMenuOptionSnapping = 1241;
+constexpr int kMenuOptionAxis = 1242;
+constexpr int kMenuOptionNormals = 1243;
+constexpr int kMenuOptionBackface = 1244;
+constexpr int kMenuOptionPreferences = 1245;
+constexpr int kMenuBuildCube = 1230;
+constexpr int kMenuBuildSphere = 1231;
+constexpr int kMenuBuildCylinder = 1232;
+constexpr int kMenuBuildCone = 1233;
+constexpr int kMenuBuildCamera = 1234;
+constexpr int kMenuBuildLight = 1235;
+constexpr int kMenuBuildTorus = 1236;
+constexpr int kMenuBuildBone = 1237;
+constexpr int kMenuBuildText = 1238;
 constexpr int kMenuViewAll = 1100;
 constexpr int kMenuViewFront = 1101;
 constexpr int kMenuViewBack = 1102;
@@ -53,6 +80,7 @@ constexpr int kMenuViewTop = 1105;
 constexpr int kMenuViewBottom = 1106;
 constexpr int kMenuViewOrtho = 1107;
 constexpr int kMenuViewPerspective = 1108;
+constexpr int kMenuViewFrameSelection = 1109;
 
 enum class ViewMode {
     All,
@@ -134,6 +162,12 @@ struct EditorState {
 
     Vec3 selectionCenter = {0.0f, 0.0f, 0.0f};
     float selectionRadius = 1.5f;
+
+    bool showGrid = true;
+    bool showAxes = true;
+    bool showNormals = false;
+    bool gridSnap = true;
+    bool backfaceCulling = false;
 
     int activeMode = 0;
     int activeTool = 0;
@@ -264,6 +298,245 @@ An8Document BuildFallbackCubeDocument() {
     return document;
 }
 
+An8Face MakeFace(std::initializer_list<uint32_t> indices) {
+    An8Face face;
+    face.indices.assign(indices.begin(), indices.end());
+    return face;
+}
+
+An8Mesh MakeCubeMesh(const std::string& name, float size, Vec3 center = {0.0f, 0.0f, 0.0f}) {
+    const float h = size * 0.5f;
+    An8Mesh mesh;
+    mesh.name = name;
+    mesh.points = {
+        {center.x - h, center.y - h, center.z - h},
+        {center.x + h, center.y - h, center.z - h},
+        {center.x + h, center.y + h, center.z - h},
+        {center.x - h, center.y + h, center.z - h},
+        {center.x - h, center.y - h, center.z + h},
+        {center.x + h, center.y - h, center.z + h},
+        {center.x + h, center.y + h, center.z + h},
+        {center.x - h, center.y + h, center.z + h}
+    };
+    mesh.faces = {
+        MakeFace({0, 1, 2, 3}),
+        MakeFace({4, 7, 6, 5}),
+        MakeFace({0, 4, 5, 1}),
+        MakeFace({1, 5, 6, 2}),
+        MakeFace({2, 6, 7, 3}),
+        MakeFace({3, 7, 4, 0})
+    };
+    return mesh;
+}
+
+An8Mesh MakeCylinderMesh(const std::string& name, float topRadius, float bottomRadius, float height, int segments) {
+    An8Mesh mesh;
+    mesh.name = name;
+    segments = std::max(3, segments);
+    const float half = height * 0.5f;
+
+    for (int i = 0; i < segments; ++i) {
+        const float a = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0f * anim8orx::AX_PI;
+        mesh.points.push_back({std::cos(a) * bottomRadius, -half, std::sin(a) * bottomRadius});
+    }
+    for (int i = 0; i < segments; ++i) {
+        const float a = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0f * anim8orx::AX_PI;
+        mesh.points.push_back({std::cos(a) * topRadius, half, std::sin(a) * topRadius});
+    }
+
+    for (int i = 0; i < segments; ++i) {
+        const uint32_t b0 = static_cast<uint32_t>(i);
+        const uint32_t b1 = static_cast<uint32_t>((i + 1) % segments);
+        const uint32_t t1 = static_cast<uint32_t>(segments + ((i + 1) % segments));
+        const uint32_t t0 = static_cast<uint32_t>(segments + i);
+        mesh.faces.push_back(MakeFace({b0, b1, t1, t0}));
+    }
+
+    An8Face bottom;
+    An8Face top;
+    for (int i = 0; i < segments; ++i) {
+        bottom.indices.push_back(static_cast<uint32_t>(segments - 1 - i));
+        top.indices.push_back(static_cast<uint32_t>(segments + i));
+    }
+    mesh.faces.push_back(std::move(bottom));
+    mesh.faces.push_back(std::move(top));
+    return mesh;
+}
+
+An8Mesh MakeSphereMesh(const std::string& name, float radius, int rings, int segments) {
+    An8Mesh mesh;
+    mesh.name = name;
+    rings = std::max(3, rings);
+    segments = std::max(6, segments);
+
+    mesh.points.push_back({0.0f, radius, 0.0f});
+    for (int r = 1; r < rings; ++r) {
+        const float v = static_cast<float>(r) / static_cast<float>(rings);
+        const float phi = v * anim8orx::AX_PI;
+        const float y = std::cos(phi) * radius;
+        const float ringRadius = std::sin(phi) * radius;
+        for (int s = 0; s < segments; ++s) {
+            const float u = static_cast<float>(s) / static_cast<float>(segments);
+            const float theta = u * 2.0f * anim8orx::AX_PI;
+            mesh.points.push_back({std::cos(theta) * ringRadius, y, std::sin(theta) * ringRadius});
+        }
+    }
+    const uint32_t bottomIndex = static_cast<uint32_t>(mesh.points.size());
+    mesh.points.push_back({0.0f, -radius, 0.0f});
+
+    for (int s = 0; s < segments; ++s) {
+        mesh.faces.push_back(MakeFace({0, static_cast<uint32_t>(1 + s), static_cast<uint32_t>(1 + ((s + 1) % segments))}));
+    }
+
+    for (int r = 0; r < rings - 2; ++r) {
+        const uint32_t row0 = static_cast<uint32_t>(1 + r * segments);
+        const uint32_t row1 = static_cast<uint32_t>(1 + (r + 1) * segments);
+        for (int s = 0; s < segments; ++s) {
+            mesh.faces.push_back(MakeFace({
+                row0 + static_cast<uint32_t>(s),
+                row0 + static_cast<uint32_t>((s + 1) % segments),
+                row1 + static_cast<uint32_t>((s + 1) % segments),
+                row1 + static_cast<uint32_t>(s)
+            }));
+        }
+    }
+
+    const uint32_t lastRow = static_cast<uint32_t>(1 + (rings - 2) * segments);
+    for (int s = 0; s < segments; ++s) {
+        mesh.faces.push_back(MakeFace({lastRow + static_cast<uint32_t>((s + 1) % segments), lastRow + static_cast<uint32_t>(s), bottomIndex}));
+    }
+    return mesh;
+}
+
+An8Mesh MakeTorusMesh(const std::string& name, float outerRadius, float tubeRadius, int rings, int segments) {
+    An8Mesh mesh;
+    mesh.name = name;
+    outerRadius = std::max(0.05f, outerRadius);
+    tubeRadius = std::max(0.01f, tubeRadius);
+    rings = std::max(3, rings);
+    segments = std::max(6, segments);
+
+    for (int r = 0; r < rings; ++r) {
+        const float u = (static_cast<float>(r) / static_cast<float>(rings)) * 2.0f * anim8orx::AX_PI;
+        const float cu = std::cos(u);
+        const float su = std::sin(u);
+        for (int s = 0; s < segments; ++s) {
+            const float v = (static_cast<float>(s) / static_cast<float>(segments)) * 2.0f * anim8orx::AX_PI;
+            const float cv = std::cos(v);
+            const float sv = std::sin(v);
+            const float radius = outerRadius + tubeRadius * cv;
+            mesh.points.push_back({radius * cu, tubeRadius * sv, radius * su});
+        }
+    }
+
+    for (int r = 0; r < rings; ++r) {
+        const uint32_t row0 = static_cast<uint32_t>(r * segments);
+        const uint32_t row1 = static_cast<uint32_t>(((r + 1) % rings) * segments);
+        for (int s = 0; s < segments; ++s) {
+            mesh.faces.push_back(MakeFace({
+                row0 + static_cast<uint32_t>(s),
+                row1 + static_cast<uint32_t>(s),
+                row1 + static_cast<uint32_t>((s + 1) % segments),
+                row0 + static_cast<uint32_t>((s + 1) % segments)
+            }));
+        }
+    }
+
+    return mesh;
+}
+
+An8Mesh MakeCameraHelperMesh() {
+    An8Mesh mesh;
+    mesh.name = "Scene_Camera";
+    mesh.points = {
+        {0.0f, 0.0f, 0.0f},
+        {-0.8f, -0.45f, -1.2f},
+        {0.8f, -0.45f, -1.2f},
+        {0.8f, 0.45f, -1.2f},
+        {-0.8f, 0.45f, -1.2f},
+        {-0.25f, -0.2f, 0.35f},
+        {0.25f, -0.2f, 0.35f},
+        {0.25f, 0.2f, 0.35f},
+        {-0.25f, 0.2f, 0.35f}
+    };
+    mesh.faces = {
+        MakeFace({0, 1, 2}),
+        MakeFace({0, 2, 3}),
+        MakeFace({0, 3, 4}),
+        MakeFace({0, 4, 1}),
+        MakeFace({5, 6, 7, 8})
+    };
+    return mesh;
+}
+
+An8Mesh MakeLightHelperMesh() {
+    An8Mesh mesh;
+    mesh.name = "Scene_Light";
+    mesh.points = {
+        {0.0f, 0.0f, 0.0f},
+        {0.0f, 0.7f, 0.0f},
+        {0.7f, 0.0f, 0.0f},
+        {0.0f, -0.7f, 0.0f},
+        {-0.7f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.7f},
+        {0.0f, 0.0f, -0.7f}
+    };
+    mesh.faces = {
+        MakeFace({1, 2, 3, 4}),
+        MakeFace({5, 1, 6, 3}),
+        MakeFace({5, 2, 6, 4})
+    };
+    return mesh;
+}
+
+An8Mesh MakeBoneHelperMesh() {
+    An8Mesh mesh;
+    mesh.name = "Figure_Bone";
+    mesh.points = {
+        {0.0f, 0.0f, 0.0f},
+        {-0.22f, 0.22f, 0.0f},
+        {0.0f, 0.0f, 0.22f},
+        {0.22f, 0.22f, 0.0f},
+        {0.0f, 0.0f, -0.22f},
+        {0.0f, 1.6f, 0.0f}
+    };
+    mesh.faces = {
+        MakeFace({0, 1, 2}),
+        MakeFace({0, 2, 3}),
+        MakeFace({0, 3, 4}),
+        MakeFace({0, 4, 1}),
+        MakeFace({5, 2, 1}),
+        MakeFace({5, 3, 2}),
+        MakeFace({5, 4, 3}),
+        MakeFace({5, 1, 4})
+    };
+    return mesh;
+}
+
+An8Mesh MakeTextHelperMesh() {
+    An8Mesh mesh;
+    mesh.name = "Text_Spline_Helper";
+    mesh.points = {
+        {-1.2f, -0.35f, 0.0f},
+        {-0.8f, 0.7f, 0.0f},
+        {-0.4f, -0.35f, 0.0f},
+        {-0.65f, 0.05f, 0.0f},
+        {-0.95f, 0.05f, 0.0f},
+        {0.05f, -0.35f, 0.0f},
+        {0.05f, 0.7f, 0.0f},
+        {0.65f, 0.7f, 0.0f},
+        {0.65f, 0.45f, 0.0f},
+        {0.32f, 0.45f, 0.0f},
+        {0.32f, -0.35f, 0.0f}
+    };
+    mesh.faces = {
+        MakeFace({0, 1, 2}),
+        MakeFace({3, 4, 1}),
+        MakeFace({5, 6, 7, 8, 9, 10})
+    };
+    return mesh;
+}
+
 void AddConsoleLine(EditorState& editor, const std::wstring& line) {
     editor.consoleLines.push_back(line);
     if (editor.consoleLines.size() > 128) {
@@ -328,6 +601,321 @@ void RecalculateSelectionBounds(EditorState& editor) {
 
     editor.selectionCenter = (minPoint + maxPoint) * 0.5f;
     editor.selectionRadius = std::max(anim8orx::Length(maxPoint - editor.selectionCenter), 0.75f);
+}
+
+An8Mesh* FindMeshByFlatIndex(An8Object& object, int targetIndex, int& currentIndex) {
+    for (An8Mesh& mesh : object.meshes) {
+        if (currentIndex == targetIndex) {
+            return &mesh;
+        }
+        ++currentIndex;
+    }
+
+    for (An8Object& child : object.children) {
+        if (An8Mesh* mesh = FindMeshByFlatIndex(child, targetIndex, currentIndex)) {
+            return mesh;
+        }
+    }
+
+    return nullptr;
+}
+
+An8Mesh* SelectedMesh(EditorState& editor) {
+    if (editor.selectedMesh < 0) {
+        return nullptr;
+    }
+
+    int current = 0;
+    for (An8Object& object : editor.document.objects) {
+        if (An8Mesh* mesh = FindMeshByFlatIndex(object, editor.selectedMesh, current)) {
+            return mesh;
+        }
+    }
+
+    return nullptr;
+}
+
+bool RemoveMeshByFlatIndex(An8Object& object, int targetIndex, int& currentIndex) {
+    for (auto it = object.meshes.begin(); it != object.meshes.end(); ++it) {
+        if (currentIndex == targetIndex) {
+            object.meshes.erase(it);
+            return true;
+        }
+        ++currentIndex;
+    }
+
+    for (An8Object& child : object.children) {
+        if (RemoveMeshByFlatIndex(child, targetIndex, currentIndex)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void RefreshDocumentView(EditorState& editor, const std::wstring& message) {
+    RebuildMeshViews(editor);
+    RecalculateSelectionBounds(editor);
+    editor.selectedMesh = editor.meshes.empty()
+        ? -1
+        : std::clamp(editor.selectedMesh, 0, static_cast<int>(editor.meshes.size()) - 1);
+    editor.camera.FocusOn(editor.selectionCenter, editor.selectionRadius);
+    AddConsoleLine(editor, message);
+    InvalidateRect(editor.hwnd, nullptr, FALSE);
+}
+
+void AddMeshObject(EditorState& editor, const std::string& objectName, An8Mesh mesh) {
+    An8Object object;
+    object.name = objectName;
+    object.meshes.push_back(std::move(mesh));
+    editor.document.objects.push_back(std::move(object));
+    editor.selectedMesh = static_cast<int>(editor.meshes.size());
+    RefreshDocumentView(editor, L"Added " + ToWide(objectName) + L".");
+}
+
+void DeleteSelectedMesh(EditorState& editor) {
+    if (editor.selectedMesh < 0) {
+        AddConsoleLine(editor, L"Nothing selected to delete.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    int current = 0;
+    for (An8Object& object : editor.document.objects) {
+        if (RemoveMeshByFlatIndex(object, editor.selectedMesh, current)) {
+            RefreshDocumentView(editor, L"Deleted selected mesh.");
+            return;
+        }
+    }
+}
+
+void ExtrudeSelectedMesh(EditorState& editor) {
+    An8Mesh* mesh = SelectedMesh(editor);
+    if (mesh == nullptr || mesh->faces.empty()) {
+        AddConsoleLine(editor, L"Extrude requires a selected mesh.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    const uint32_t offset = static_cast<uint32_t>(mesh->points.size());
+    const float amount = std::max(editor.selectionRadius * 0.18f, 0.35f);
+    const std::vector<An8Face> originalFaces = mesh->faces;
+
+    for (const An8Vector3& point : std::vector<An8Vector3>(mesh->points.begin(), mesh->points.end())) {
+        mesh->points.push_back({point.x, point.y, point.z + amount});
+    }
+
+    for (const An8Face& face : originalFaces) {
+        if (face.indices.size() < 3) {
+            continue;
+        }
+
+        An8Face top;
+        for (auto it = face.indices.rbegin(); it != face.indices.rend(); ++it) {
+            top.indices.push_back(offset + *it);
+        }
+        mesh->faces.push_back(std::move(top));
+
+        for (size_t i = 0; i < face.indices.size(); ++i) {
+            const uint32_t a = face.indices[i];
+            const uint32_t b = face.indices[(i + 1) % face.indices.size()];
+            mesh->faces.push_back(MakeFace({a, b, offset + b, offset + a}));
+        }
+    }
+
+    RefreshDocumentView(editor, L"Extruded selected mesh.");
+}
+
+void SubdivideSelectedMesh(EditorState& editor) {
+    An8Mesh* mesh = SelectedMesh(editor);
+    if (mesh == nullptr || mesh->faces.empty()) {
+        AddConsoleLine(editor, L"Subdivide requires a selected mesh.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    std::vector<An8Face> newFaces;
+    for (const An8Face& face : mesh->faces) {
+        if (face.indices.size() < 3) {
+            continue;
+        }
+
+        An8Vector3 center{};
+        int validCount = 0;
+        for (uint32_t index : face.indices) {
+            if (index < mesh->points.size()) {
+                center.x += mesh->points[index].x;
+                center.y += mesh->points[index].y;
+                center.z += mesh->points[index].z;
+                ++validCount;
+            }
+        }
+        if (validCount == 0) {
+            continue;
+        }
+
+        center.x /= static_cast<float>(validCount);
+        center.y /= static_cast<float>(validCount);
+        center.z /= static_cast<float>(validCount);
+        const uint32_t centerIndex = static_cast<uint32_t>(mesh->points.size());
+        mesh->points.push_back(center);
+
+        for (size_t i = 0; i < face.indices.size(); ++i) {
+            newFaces.push_back(MakeFace({face.indices[i], face.indices[(i + 1) % face.indices.size()], centerIndex}));
+        }
+    }
+
+    mesh->faces = std::move(newFaces);
+    RefreshDocumentView(editor, L"Subdivided selected mesh.");
+}
+
+void InsetSelectedMesh(EditorState& editor) {
+    An8Mesh* mesh = SelectedMesh(editor);
+    if (mesh == nullptr || mesh->faces.empty()) {
+        AddConsoleLine(editor, L"Inset requires a selected mesh.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    const float amount = 0.72f;
+    const std::vector<An8Face> originalFaces = mesh->faces;
+    std::vector<An8Face> insetFaces;
+    insetFaces.reserve(originalFaces.size() * 5);
+
+    for (const An8Face& face : originalFaces) {
+        if (face.indices.size() < 3) {
+            continue;
+        }
+
+        An8Vector3 center{};
+        int validCount = 0;
+        for (uint32_t index : face.indices) {
+            if (index < mesh->points.size()) {
+                center.x += mesh->points[index].x;
+                center.y += mesh->points[index].y;
+                center.z += mesh->points[index].z;
+                ++validCount;
+            }
+        }
+        if (validCount < 3) {
+            continue;
+        }
+
+        center.x /= static_cast<float>(validCount);
+        center.y /= static_cast<float>(validCount);
+        center.z /= static_cast<float>(validCount);
+
+        std::vector<uint32_t> inner;
+        inner.reserve(face.indices.size());
+        for (uint32_t index : face.indices) {
+            if (index >= mesh->points.size()) {
+                continue;
+            }
+
+            const An8Vector3& source = mesh->points[index];
+            An8Vector3 insetPoint;
+            insetPoint.x = center.x + (source.x - center.x) * amount;
+            insetPoint.y = center.y + (source.y - center.y) * amount;
+            insetPoint.z = center.z + (source.z - center.z) * amount;
+            inner.push_back(static_cast<uint32_t>(mesh->points.size()));
+            mesh->points.push_back(insetPoint);
+        }
+
+        if (inner.size() != face.indices.size()) {
+            continue;
+        }
+
+        An8Face innerFace;
+        innerFace.indices = inner;
+        insetFaces.push_back(std::move(innerFace));
+
+        for (size_t i = 0; i < face.indices.size(); ++i) {
+            const uint32_t outer0 = face.indices[i];
+            const uint32_t outer1 = face.indices[(i + 1) % face.indices.size()];
+            const uint32_t inner1 = inner[(i + 1) % inner.size()];
+            const uint32_t inner0 = inner[i];
+            insetFaces.push_back(MakeFace({outer0, outer1, inner1, inner0}));
+        }
+    }
+
+    mesh->faces = std::move(insetFaces);
+    RefreshDocumentView(editor, L"Inset selected mesh faces.");
+}
+
+void MirrorSelectedMesh(EditorState& editor) {
+    An8Mesh* mesh = SelectedMesh(editor);
+    if (mesh == nullptr || mesh->points.empty()) {
+        AddConsoleLine(editor, L"Mirror requires a selected mesh.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    const uint32_t offset = static_cast<uint32_t>(mesh->points.size());
+    const std::vector<An8Vector3> originalPoints = mesh->points;
+    const std::vector<An8Face> originalFaces = mesh->faces;
+
+    for (const An8Vector3& point : originalPoints) {
+        mesh->points.push_back({-point.x, point.y, point.z});
+    }
+
+    for (const An8Face& face : originalFaces) {
+        An8Face mirrored;
+        for (auto it = face.indices.rbegin(); it != face.indices.rend(); ++it) {
+            mirrored.indices.push_back(offset + *it);
+        }
+        mesh->faces.push_back(std::move(mirrored));
+    }
+
+    RefreshDocumentView(editor, L"Mirrored selected mesh across X.");
+}
+
+void LatheSelectedMesh(EditorState& editor) {
+    An8Mesh* mesh = SelectedMesh(editor);
+    if (mesh == nullptr) {
+        AddConsoleLine(editor, L"Lathe requires a selected mesh.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    std::vector<An8Vector3> profile = mesh->points;
+    if (profile.size() < 2) {
+        profile = {
+            {0.25f, -1.0f, 0.0f},
+            {0.85f, -0.65f, 0.0f},
+            {0.55f, 0.35f, 0.0f},
+            {0.95f, 1.0f, 0.0f}
+        };
+    }
+
+    std::sort(profile.begin(), profile.end(), [](const An8Vector3& a, const An8Vector3& b) {
+        return a.y < b.y;
+    });
+
+    const int segments = 24;
+    An8Mesh lathed;
+    lathed.name = mesh->name + "_Lathe";
+
+    for (int s = 0; s < segments; ++s) {
+        const float a = (static_cast<float>(s) / static_cast<float>(segments)) * 2.0f * anim8orx::AX_PI;
+        const float ca = std::cos(a);
+        const float sa = std::sin(a);
+        for (const An8Vector3& p : profile) {
+            const float r = std::max(std::sqrt(p.x * p.x + p.z * p.z), 0.05f);
+            lathed.points.push_back({r * ca, p.y, r * sa});
+        }
+    }
+
+    const uint32_t rows = static_cast<uint32_t>(profile.size());
+    for (int s = 0; s < segments; ++s) {
+        const uint32_t row0 = static_cast<uint32_t>(s) * rows;
+        const uint32_t row1 = static_cast<uint32_t>((s + 1) % segments) * rows;
+        for (uint32_t r = 0; r + 1 < rows; ++r) {
+            lathed.faces.push_back(MakeFace({row0 + r, row1 + r, row1 + r + 1, row0 + r + 1}));
+        }
+    }
+
+    *mesh = std::move(lathed);
+    RefreshDocumentView(editor, L"Lathed selected profile around Y.");
 }
 
 std::wstring ViewModeName(ViewMode mode) {
@@ -402,6 +990,7 @@ bool LoadDocument(EditorState& editor, const std::filesystem::path& requestedPat
             }
         } else {
             editor.document = BuildFallbackCubeDocument();
+            editor.loadedPath.clear();
             AddConsoleLine(editor, L"Could not load requested .an8 file. Using built-in cube.");
             for (const std::string& error : result.errors) {
                 AddConsoleLine(editor, L"Error: " + ToWide(error));
@@ -409,10 +998,14 @@ bool LoadDocument(EditorState& editor, const std::filesystem::path& requestedPat
         }
     } else {
         editor.document = BuildFallbackCubeDocument();
+        editor.loadedPath.clear();
         AddConsoleLine(editor, L"No bundled .an8 sample found. Using built-in cube.");
     }
 
     RebuildMeshViews(editor);
+    if (editor.meshes.empty()) {
+        AddConsoleLine(editor, L"Loaded document contains no mesh geometry Anim8orX can render yet.");
+    }
     RecalculateSelectionBounds(editor);
     SetViewportView(editor, ViewMode::Perspective);
     return !editor.meshes.empty();
@@ -432,9 +1025,8 @@ void RefreshWindowTitle(EditorState& editor) {
 }
 
 void LoadDocumentAndRefresh(EditorState& editor, const std::filesystem::path& path) {
-    if (LoadDocument(editor, path)) {
-        RefreshWindowTitle(editor);
-    }
+    LoadDocument(editor, path);
+    RefreshWindowTitle(editor);
     InvalidateRect(editor.hwnd, nullptr, FALSE);
 }
 
@@ -467,6 +1059,158 @@ void OpenAn8FromDialog(EditorState& editor) {
     }
 
     LoadDocumentAndRefresh(editor, path);
+}
+
+std::string EscapeAn8String(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (char c : text) {
+        if (c == '"' || c == '\\') {
+            escaped.push_back('\\');
+        }
+        escaped.push_back(c);
+    }
+    return escaped;
+}
+
+void WriteIndent(std::ostream& out, int indent) {
+    for (int i = 0; i < indent; ++i) {
+        out << "  ";
+    }
+}
+
+void WriteAn8Mesh(std::ostream& out, const An8Mesh& mesh, int indent) {
+    WriteIndent(out, indent);
+    out << "mesh {\n";
+    WriteIndent(out, indent + 1);
+    out << '"' << EscapeAn8String(mesh.name.empty() ? "mesh" : mesh.name) << "\"\n";
+
+    WriteIndent(out, indent + 1);
+    out << "points {\n";
+    out << std::fixed << std::setprecision(5);
+    for (const An8Vector3& point : mesh.points) {
+        WriteIndent(out, indent + 2);
+        out << '(' << point.x << ' ' << point.y << ' ' << point.z << ")\n";
+    }
+    WriteIndent(out, indent + 1);
+    out << "}\n";
+
+    WriteIndent(out, indent + 1);
+    out << "faces {\n";
+    for (const An8Face& face : mesh.faces) {
+        if (face.indices.size() < 3) {
+            continue;
+        }
+
+        WriteIndent(out, indent + 2);
+        out << face.indices.size() << " 4 0 -1 (";
+        for (size_t i = 0; i < face.indices.size(); ++i) {
+            if (i > 0) {
+                out << ' ';
+            }
+            out << face.indices[i];
+        }
+        out << ")\n";
+    }
+    WriteIndent(out, indent + 1);
+    out << "}\n";
+
+    WriteIndent(out, indent);
+    out << "}\n";
+}
+
+void WriteAn8Object(std::ostream& out, const An8Object& object, int indent) {
+    WriteIndent(out, indent);
+    out << "object {\n";
+    WriteIndent(out, indent + 1);
+    out << '"' << EscapeAn8String(object.name.empty() ? "object" : object.name) << "\"\n";
+
+    for (const An8Mesh& mesh : object.meshes) {
+        WriteAn8Mesh(out, mesh, indent + 1);
+    }
+
+    for (const An8Object& child : object.children) {
+        WriteAn8Object(out, child, indent + 1);
+    }
+
+    WriteIndent(out, indent);
+    out << "}\n";
+}
+
+bool SaveDocumentToPath(EditorState& editor, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return false;
+    }
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        AddConsoleLine(editor, L"Could not save .an8 file: " + path.wstring());
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return false;
+    }
+
+    out << "header {\n";
+    out << "  version { \"1.00\" }\n";
+    out << "}\n\n";
+    out << "description {\n";
+    out << "  \"Saved by Anim8orX\"\n";
+    out << "}\n\n";
+
+    for (const An8Object& object : editor.document.objects) {
+        WriteAn8Object(out, object, 0);
+        out << '\n';
+    }
+
+    if (!out) {
+        AddConsoleLine(editor, L"Failed while writing .an8 file: " + path.wstring());
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return false;
+    }
+
+    editor.loadedPath = path;
+    AddConsoleLine(editor, L"Saved .an8 file: " + path.wstring());
+    RefreshWindowTitle(editor);
+    InvalidateRect(editor.hwnd, nullptr, FALSE);
+    return true;
+}
+
+std::filesystem::path ShowSaveAn8Dialog(HWND owner) {
+    wchar_t fileName[MAX_PATH] = L"Anim8orXScene.an8";
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Anim8or Files (*.an8)\0*.an8\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = fileName;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+    ofn.lpstrDefExt = L"an8";
+    ofn.lpstrTitle = L"Save Anim8orX .an8 File";
+
+    if (!GetSaveFileNameW(&ofn)) {
+        return {};
+    }
+
+    return std::filesystem::path(fileName);
+}
+
+bool SaveDocumentAs(EditorState& editor) {
+    const std::filesystem::path path = ShowSaveAn8Dialog(editor.hwnd);
+    if (path.empty()) {
+        AddConsoleLine(editor, L"Save .an8 cancelled.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return false;
+    }
+
+    return SaveDocumentToPath(editor, path);
+}
+
+bool SaveDocument(EditorState& editor) {
+    if (editor.loadedPath.empty()) {
+        return SaveDocumentAs(editor);
+    }
+
+    return SaveDocumentToPath(editor, editor.loadedPath);
 }
 
 void NewDefaultDocument(EditorState& editor) {
@@ -569,15 +1313,16 @@ void CalculateLayout(EditorState& editor) {
     const int commandStrip = 32;
     const int status = 20;
     const int rail = 62;
+    const int explorer = editor.width >= 1100 ? 244 : editor.width >= 900 ? 200 : 0;
     const int right = editor.width >= 980 ? 344 : 0;
     const int bottom = editor.height >= 680 ? 128 : 92;
 
     editor.layout.topBar = {0, 0, editor.width, commandStrip};
-    editor.layout.leftPanel = {0, commandStrip, rail, editor.height - commandStrip - status};
-    editor.layout.toolBar = {0, 0, 0, 0};
+    editor.layout.toolBar = {0, commandStrip, rail, editor.height - commandStrip - status};
+    editor.layout.leftPanel = {rail, commandStrip, explorer, editor.height - commandStrip - bottom - status};
     editor.layout.rightPanel = {editor.width - right, commandStrip, right, editor.height - commandStrip - bottom - status};
     editor.layout.console = {rail, editor.height - bottom - status, editor.width - rail, bottom};
-    editor.layout.viewport = {rail, commandStrip, editor.width - rail - right, editor.height - commandStrip - bottom - status};
+    editor.layout.viewport = {rail + explorer, commandStrip, editor.width - rail - explorer - right, editor.height - commandStrip - bottom - status};
     editor.layout.status = {0, editor.height - status, editor.width, status};
 }
 
@@ -768,7 +1513,7 @@ void DrawTopBar(HDC dc, const EditorState& editor) {
 }
 
 void DrawToolBar(HDC dc, const EditorState& editor) {
-    const RectI& rail = editor.layout.leftPanel;
+    const RectI& rail = editor.layout.toolBar;
     Fill(dc, rail, Rgb(43, 43, 43));
     DrawLine(dc, rail.x + rail.w - 1, rail.y, rail.x + rail.w - 1, rail.y + rail.h, Rgb(5, 5, 5));
 
@@ -827,6 +1572,10 @@ void DrawToolBar(HDC dc, const EditorState& editor) {
 
 void DrawHierarchy(HDC dc, const EditorState& editor) {
     const RectI& panel = editor.layout.leftPanel;
+    if (panel.w <= 0 || panel.h <= 0) {
+        return;
+    }
+
     Fill(dc, panel, Rgb(26, 28, 34));
     Stroke(dc, panel, Rgb(68, 74, 84));
     DrawPanelHeader(dc, editor, panel, L"Hierarchy");
@@ -937,17 +1686,17 @@ void DrawInspector(HDC dc, const EditorState& editor) {
         case 0:
             DrawSectionTitle(dc, editor, x, y, L"Global Preferences");
             DrawInspectorRow(dc, editor, x, y, L"Grid Width", L"100.00"); y += 24;
-            DrawCheckboxRow(dc, editor, x, y, L"Grid Snap", true); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Grid Snap", editor.gridSnap); y += 22;
             DrawInspectorRow(dc, editor, x, y, L"Grid Snap Size", L"0.25"); y += 24;
             DrawCheckboxRow(dc, editor, x, y, L"Angle Snap", true); y += 22;
             DrawInspectorRow(dc, editor, x, y, L"Angle Snap Size", L"15.0 deg"); y += 24;
-            DrawCheckboxRow(dc, editor, x, y, L"Backface Culling", false); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Backface Culling", editor.backfaceCulling); y += 22;
             DrawCheckboxRow(dc, editor, x, y, L"Auto-Save", true); y += 22;
             DrawInspectorRow(dc, editor, x, y, L"Interval", L"5 min"); y += 30;
             DrawSectionTitle(dc, editor, x, y, L"Viewport Overlays");
-            DrawCheckboxRow(dc, editor, x, y, L"Show Grid", true); y += 22;
-            DrawCheckboxRow(dc, editor, x, y, L"Show Axes", true); y += 22;
-            DrawCheckboxRow(dc, editor, x, y, L"Show Normals", false); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Show Grid", editor.showGrid); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Show Axes", editor.showAxes); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Show Normals", editor.showNormals); y += 22;
             DrawSliderRow(dc, editor, x, y, L"Normal Scale", 0.35f, L"0.35"); y += 24;
             break;
 
@@ -1102,39 +1851,43 @@ void DrawGridAndAxes(HDC dc, const EditorState& editor) {
     const COLORREF major = Rgb(91, 96, 100);
     const COLORREF depth = Rgb(54, 58, 62);
 
-    switch (editor.activeView) {
-        case ViewMode::Front:
-        case ViewMode::Back:
-        case ViewMode::Ortho:
-            DrawGridPlaneXY(dc, editor, 0.0f, extent, minor, major);
-            break;
-        case ViewMode::Left:
-        case ViewMode::Right:
-            DrawGridPlaneZY(dc, editor, 0.0f, extent, minor, major);
-            break;
-        case ViewMode::Top:
-        case ViewMode::Bottom:
-            DrawGridPlaneXZ(dc, editor, 0.0f, extent, minor, major);
-            break;
-        case ViewMode::All:
-        case ViewMode::Perspective:
-        default:
-            DrawGridPlaneXZ(dc, editor, 0.0f, extent, minor, major);
-            for (int i = -extent; i <= extent; i += 2) {
-                DrawWorldLine(dc, editor, {static_cast<float>(i), 0.0f, static_cast<float>(-extent)}, {static_cast<float>(i), 6.0f, static_cast<float>(-extent)}, depth);
-                DrawWorldLine(dc, editor, {static_cast<float>(-extent), 0.0f, static_cast<float>(i)}, {static_cast<float>(-extent), 6.0f, static_cast<float>(i)}, depth);
-            }
-            for (int y = 1; y <= 6; ++y) {
-                const float fy = static_cast<float>(y);
-                DrawWorldLine(dc, editor, {static_cast<float>(-extent), fy, static_cast<float>(-extent)}, {static_cast<float>(extent), fy, static_cast<float>(-extent)}, depth);
-                DrawWorldLine(dc, editor, {static_cast<float>(-extent), fy, static_cast<float>(-extent)}, {static_cast<float>(-extent), fy, static_cast<float>(extent)}, depth);
-            }
-            break;
+    if (editor.showGrid) {
+        switch (editor.activeView) {
+            case ViewMode::Front:
+            case ViewMode::Back:
+            case ViewMode::Ortho:
+                DrawGridPlaneXY(dc, editor, 0.0f, extent, minor, major);
+                break;
+            case ViewMode::Left:
+            case ViewMode::Right:
+                DrawGridPlaneZY(dc, editor, 0.0f, extent, minor, major);
+                break;
+            case ViewMode::Top:
+            case ViewMode::Bottom:
+                DrawGridPlaneXZ(dc, editor, 0.0f, extent, minor, major);
+                break;
+            case ViewMode::All:
+            case ViewMode::Perspective:
+            default:
+                DrawGridPlaneXZ(dc, editor, 0.0f, extent, minor, major);
+                for (int i = -extent; i <= extent; i += 2) {
+                    DrawWorldLine(dc, editor, {static_cast<float>(i), 0.0f, static_cast<float>(-extent)}, {static_cast<float>(i), 6.0f, static_cast<float>(-extent)}, depth);
+                    DrawWorldLine(dc, editor, {static_cast<float>(-extent), 0.0f, static_cast<float>(i)}, {static_cast<float>(-extent), 6.0f, static_cast<float>(i)}, depth);
+                }
+                for (int y = 1; y <= 6; ++y) {
+                    const float fy = static_cast<float>(y);
+                    DrawWorldLine(dc, editor, {static_cast<float>(-extent), fy, static_cast<float>(-extent)}, {static_cast<float>(extent), fy, static_cast<float>(-extent)}, depth);
+                    DrawWorldLine(dc, editor, {static_cast<float>(-extent), fy, static_cast<float>(-extent)}, {static_cast<float>(-extent), fy, static_cast<float>(extent)}, depth);
+                }
+                break;
+        }
     }
 
-    DrawWorldLine(dc, editor, {-extent, 0.0f, 0.0f}, {extent, 0.0f, 0.0f}, Rgb(190, 73, 73), 2);
-    DrawWorldLine(dc, editor, {0.0f, 0.0f, -extent}, {0.0f, 0.0f, extent}, Rgb(76, 152, 88), 2);
-    DrawWorldLine(dc, editor, {0.0f, -2.0f, 0.0f}, {0.0f, 8.0f, 0.0f}, Rgb(86, 134, 220), 2);
+    if (editor.showAxes) {
+        DrawWorldLine(dc, editor, {-extent, 0.0f, 0.0f}, {extent, 0.0f, 0.0f}, Rgb(190, 73, 73), 2);
+        DrawWorldLine(dc, editor, {0.0f, 0.0f, -extent}, {0.0f, 0.0f, extent}, Rgb(76, 152, 88), 2);
+        DrawWorldLine(dc, editor, {0.0f, -2.0f, 0.0f}, {0.0f, 8.0f, 0.0f}, Rgb(86, 134, 220), 2);
+    }
 }
 
 void DrawMeshes(HDC dc, const EditorState& editor) {
@@ -1149,6 +1902,44 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                 continue;
             }
 
+            Vec3 center{};
+            int centerCount = 0;
+            Vec3 normal{};
+            bool hasNormal = false;
+            if (face.indices.size() >= 3) {
+                const uint32_t ia = face.indices[0];
+                const uint32_t ib = face.indices[1];
+                const uint32_t ic = face.indices[2];
+                if (ia < mesh.points.size() && ib < mesh.points.size() && ic < mesh.points.size()) {
+                    const An8Vector3& a = mesh.points[ia];
+                    const An8Vector3& b = mesh.points[ib];
+                    const An8Vector3& c = mesh.points[ic];
+                    normal = anim8orx::Normalize(anim8orx::Cross(
+                        Vec3{b.x - a.x, b.y - a.y, b.z - a.z},
+                        Vec3{c.x - a.x, c.y - a.y, c.z - a.z}));
+                    hasNormal = anim8orx::Length(normal) > 0.0001f;
+                }
+            }
+
+            if (editor.backfaceCulling || editor.showNormals) {
+                for (uint32_t index : face.indices) {
+                    if (index < mesh.points.size()) {
+                        center += Vec3{mesh.points[index].x, mesh.points[index].y, mesh.points[index].z};
+                        ++centerCount;
+                    }
+                }
+                if (centerCount > 0) {
+                    center = center / static_cast<float>(centerCount);
+                }
+            }
+
+            if (editor.backfaceCulling && hasNormal && centerCount > 0) {
+                const Vec3 toCamera = anim8orx::Normalize(editor.camera.position - center);
+                if (anim8orx::Dot(normal, toCamera) <= 0.0f) {
+                    continue;
+                }
+            }
+
             for (size_t i = 0; i < face.indices.size(); ++i) {
                 const uint32_t a = face.indices[i];
                 const uint32_t b = face.indices[(i + 1) % face.indices.size()];
@@ -1156,6 +1947,13 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                     continue;
                 }
                 DrawWorldLine(dc, editor, mesh.points[a], mesh.points[b], color, width);
+            }
+
+            if (editor.showNormals && face.indices.size() >= 3) {
+                if (hasNormal && centerCount > 0) {
+                    const Vec3 end = center + normal * 0.45f;
+                    DrawWorldLine(dc, editor, {center.x, center.y, center.z}, {end.x, end.y, end.z}, Rgb(92, 174, 188), 1);
+                }
             }
         }
     }
@@ -1187,9 +1985,9 @@ void DrawViewport(HDC dc, const EditorState& editor) {
     Text(dc, L"Y", axisX - 6, axisY - 55, 22, 18, Rgb(255, 148, 0), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     Text(dc, L"X", axisX + 34, axisY - 2, 22, 18, Rgb(255, 148, 0), editor.smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    Fill(dc, {viewport.x + viewport.w - 316, viewport.y + 8, 300, 24}, Rgb(47, 47, 47));
-    Stroke(dc, {viewport.x + viewport.w - 316, viewport.y + 8, 300, 24}, Rgb(88, 88, 88));
-    Text(dc, L"RMB+WASD fly  Alt+LMB orbit  F focus", viewport.x + viewport.w - 308, viewport.y + 8, 284, 24, Rgb(188, 188, 188), editor.smallFont);
+    Fill(dc, {viewport.x + viewport.w - 396, viewport.y + 8, 380, 24}, Rgb(47, 47, 47));
+    Stroke(dc, {viewport.x + viewport.w - 396, viewport.y + 8, 380, 24}, Rgb(88, 88, 88));
+    Text(dc, L"RMB+WASD fly  RMB+Wheel speed  Alt+LMB orbit  F focus", viewport.x + viewport.w - 388, viewport.y + 8, 364, 24, Rgb(188, 188, 188), editor.smallFont);
 }
 
 RectI ViewLabelRect(const EditorState& editor) {
@@ -1284,6 +2082,7 @@ void PaintEditor(HWND hwnd, EditorState& editor) {
     Fill(dc, {0, 0, editor.width, editor.height}, Rgb(18, 20, 25));
     DrawTopBar(dc, editor);
     DrawToolBar(dc, editor);
+    DrawHierarchy(dc, editor);
     DrawViewport(dc, editor);
     DrawInspector(dc, editor);
     DrawConsole(dc, editor);
@@ -1368,7 +2167,7 @@ void ClickHierarchy(EditorState& editor, int x, int y) {
 }
 
 void ClickToolRail(EditorState& editor, int x, int y) {
-    const RectI& rail = editor.layout.leftPanel;
+    const RectI& rail = editor.layout.toolBar;
     if (!rail.Contains(x, y)) {
         return;
     }
@@ -1507,10 +2306,10 @@ HMENU CreateAnim8orXMenu() {
         {L"File", {L"New", L"Open .an8...", L"Save", L"Save As...", L"Import", L"Export", L"Preferences", L"Exit", nullptr}},
         {L"Edit", {L"Undo", L"Redo", L"Cut", L"Copy", L"Paste", L"Delete", L"Select All", L"Preferences", nullptr}},
         {L"Mode", {L"Object", L"Figure", L"Sequence", L"Scene", nullptr}},
-        {L"Object", {L"New Mesh", L"Convert to Mesh", L"Join Solids", L"Subdivide Faces", L"Extrude", L"Lathe", L"Mirror", L"Smooth", nullptr}},
+        {L"Object", {L"New Mesh", L"Convert to Mesh", L"Join Solids", L"Subdivide Faces", L"Extrude", L"Inset", L"Lathe", L"Mirror", L"Smooth", nullptr}},
         {L"Options", {L"Grid", L"Snapping", L"Show Axis", L"Show Normals", L"Backface Culling", L"Theme", nullptr}},
         {L"View", {L"All", L"Front", L"Back", L"Left", L"Right", L"Top", L"Bottom", L"Ortho", L"Perspective", L"Frame Selection", nullptr}},
-        {L"Build", {L"Add Cube", L"Add Sphere", L"Add Cylinder", L"Add Cone", L"Add Text", L"Add Bone", L"Add Camera", L"Add Light", nullptr}},
+        {L"Build", {L"Add Cube", L"Add Sphere", L"Add Cylinder", L"Add Cone", L"Add Torus", L"Add Text", L"Add Bone", L"Add Camera", L"Add Light", nullptr}},
         {L"Scripts", {L"Run Script...", L"Script Console", L"Reload Scripts", nullptr}},
         {L"Render", {L"Preview Render", L"Render Settings", L"Materials", L"Lights", nullptr}},
         {L"Window", {L"Explorer", L"Inspector", L"Console", L"Materials", L"Timeline", L"Reset Layout", nullptr}},
@@ -1526,13 +2325,73 @@ HMENU CreateAnim8orXMenu() {
                     id = kMenuFileNew;
                 } else if (i == 1) {
                     id = kMenuFileOpen;
+                } else if (i == 2) {
+                    id = kMenuFileSave;
+                } else if (i == 3) {
+                    id = kMenuFileSaveAs;
+                } else if (i == 4) {
+                    id = kMenuFileImport;
+                } else if (i == 5) {
+                    id = kMenuFileExport;
+                } else if (i == 6) {
+                    id = kMenuOptionPreferences;
                 } else if (i == 7) {
                     id = kMenuFileExit;
                 }
+            } else if (wcscmp(spec.name, L"Edit") == 0) {
+                if (i == 5) {
+                    id = kMenuEditDelete;
+                }
             } else if (wcscmp(spec.name, L"Mode") == 0) {
                 id = i == 0 ? kMenuModeObject : i == 1 ? kMenuModeFigure : i == 2 ? kMenuModeSequence : kMenuModeScene;
+            } else if (wcscmp(spec.name, L"Object") == 0) {
+                if (i == 3) {
+                    id = kMenuObjectSubdivide;
+                } else if (i == 4) {
+                    id = kMenuObjectExtrude;
+                } else if (i == 5) {
+                    id = kMenuObjectInset;
+                } else if (i == 6) {
+                    id = kMenuObjectLathe;
+                } else if (i == 7) {
+                    id = kMenuObjectMirror;
+                }
+            } else if (wcscmp(spec.name, L"Options") == 0) {
+                if (i == 0) {
+                    id = kMenuOptionGrid;
+                } else if (i == 1) {
+                    id = kMenuOptionSnapping;
+                } else if (i == 2) {
+                    id = kMenuOptionAxis;
+                } else if (i == 3) {
+                    id = kMenuOptionNormals;
+                } else if (i == 4) {
+                    id = kMenuOptionBackface;
+                } else if (i == 5) {
+                    id = kMenuOptionPreferences;
+                }
             } else if (wcscmp(spec.name, L"View") == 0) {
                 id = kMenuViewAll + i;
+            } else if (wcscmp(spec.name, L"Build") == 0) {
+                if (i == 0) {
+                    id = kMenuBuildCube;
+                } else if (i == 1) {
+                    id = kMenuBuildSphere;
+                } else if (i == 2) {
+                    id = kMenuBuildCylinder;
+                } else if (i == 3) {
+                    id = kMenuBuildCone;
+                } else if (i == 4) {
+                    id = kMenuBuildTorus;
+                } else if (i == 5) {
+                    id = kMenuBuildText;
+                } else if (i == 6) {
+                    id = kMenuBuildBone;
+                } else if (i == 7) {
+                    id = kMenuBuildCamera;
+                } else if (i == 8) {
+                    id = kMenuBuildLight;
+                }
             }
             AppendMenuW(popup, MF_STRING, id, spec.items[i]);
         }
@@ -1588,8 +2447,23 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 case kMenuFileOpen:
                     OpenAn8FromDialog(editor);
                     break;
+                case kMenuFileImport:
+                    OpenAn8FromDialog(editor);
+                    break;
+                case kMenuFileSave:
+                    SaveDocument(editor);
+                    break;
+                case kMenuFileSaveAs:
+                    SaveDocumentAs(editor);
+                    break;
+                case kMenuFileExport:
+                    SaveDocumentAs(editor);
+                    break;
                 case kMenuFileExit:
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    break;
+                case kMenuEditDelete:
+                    DeleteSelectedMesh(editor);
                     break;
                 case kMenuModeObject:
                     SetEditorMode(editor, 0);
@@ -1630,6 +2504,90 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 case kMenuViewPerspective:
                     SetViewportView(editor, ViewMode::Perspective);
                     break;
+                case kMenuViewFrameSelection:
+                    editor.camera.FocusOn(editor.selectionCenter, editor.selectionRadius);
+                    AddConsoleLine(editor, L"Framed selected object.");
+                    break;
+                case kMenuOptionGrid:
+                    editor.showGrid = !editor.showGrid;
+                    editor.propertyPage = 0;
+                    AddConsoleLine(editor, editor.showGrid ? L"Grid enabled." : L"Grid disabled.");
+                    break;
+                case kMenuOptionSnapping:
+                    editor.gridSnap = !editor.gridSnap;
+                    editor.propertyPage = 0;
+                    AddConsoleLine(editor, editor.gridSnap ? L"Grid snapping enabled." : L"Grid snapping disabled.");
+                    break;
+                case kMenuOptionAxis:
+                    editor.showAxes = !editor.showAxes;
+                    editor.propertyPage = 0;
+                    AddConsoleLine(editor, editor.showAxes ? L"Axes enabled." : L"Axes disabled.");
+                    break;
+                case kMenuOptionNormals:
+                    editor.showNormals = !editor.showNormals;
+                    editor.propertyPage = 0;
+                    AddConsoleLine(editor, editor.showNormals ? L"Normals enabled." : L"Normals disabled.");
+                    break;
+                case kMenuOptionBackface:
+                    editor.backfaceCulling = !editor.backfaceCulling;
+                    editor.propertyPage = 0;
+                    AddConsoleLine(editor, editor.backfaceCulling ? L"Backface culling enabled." : L"Backface culling disabled.");
+                    break;
+                case kMenuOptionPreferences:
+                    editor.propertyPage = 0;
+                    AddConsoleLine(editor, L"Opened preferences.");
+                    break;
+                case kMenuObjectSubdivide:
+                    SubdivideSelectedMesh(editor);
+                    break;
+                case kMenuObjectExtrude:
+                    ExtrudeSelectedMesh(editor);
+                    break;
+                case kMenuObjectInset:
+                    InsetSelectedMesh(editor);
+                    break;
+                case kMenuObjectLathe:
+                    LatheSelectedMesh(editor);
+                    break;
+                case kMenuObjectMirror:
+                    MirrorSelectedMesh(editor);
+                    break;
+                case kMenuBuildCube:
+                    SetEditorMode(editor, 0);
+                    AddMeshObject(editor, "Cube", MakeCubeMesh("Cube_Mesh", 2.0f));
+                    break;
+                case kMenuBuildSphere:
+                    SetEditorMode(editor, 0);
+                    AddMeshObject(editor, "Sphere", MakeSphereMesh("Sphere_Mesh", 1.0f, 12, 24));
+                    break;
+                case kMenuBuildCylinder:
+                    SetEditorMode(editor, 0);
+                    AddMeshObject(editor, "Cylinder", MakeCylinderMesh("Cylinder_Mesh", 1.0f, 1.0f, 2.0f, 24));
+                    break;
+                case kMenuBuildCone:
+                    SetEditorMode(editor, 0);
+                    AddMeshObject(editor, "Cone", MakeCylinderMesh("Cone_Mesh", 0.0f, 1.0f, 2.0f, 24));
+                    break;
+                case kMenuBuildTorus:
+                    SetEditorMode(editor, 0);
+                    AddMeshObject(editor, "Torus", MakeTorusMesh("Torus_Mesh", 1.1f, 0.28f, 24, 16));
+                    break;
+                case kMenuBuildText:
+                    SetEditorMode(editor, 0);
+                    AddMeshObject(editor, "Text", MakeTextHelperMesh());
+                    break;
+                case kMenuBuildBone:
+                    SetEditorMode(editor, 1);
+                    AddMeshObject(editor, "Bone", MakeBoneHelperMesh());
+                    break;
+                case kMenuBuildCamera:
+                    SetEditorMode(editor, 3);
+                    AddMeshObject(editor, "Camera", MakeCameraHelperMesh());
+                    break;
+                case kMenuBuildLight:
+                    SetEditorMode(editor, 3);
+                    AddMeshObject(editor, "Light", MakeLightHelperMesh());
+                    break;
                 default:
                     AddConsoleLine(editor, L"Menu command selected. Implementation pending.");
                     break;
@@ -1654,6 +2612,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             } else {
                 ClickTopBar(editor, x, y);
                 ClickToolRail(editor, x, y);
+                ClickHierarchy(editor, x, y);
                 ClickPropertyDeck(editor, x, y);
             }
             return 0;
@@ -1717,7 +2676,15 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
         }
 
         case WM_KEYDOWN:
-            if (wParam == 'F') {
+            if (IsKeyDown(VK_CONTROL) && wParam == 'N') {
+                NewDefaultDocument(editor);
+            } else if (IsKeyDown(VK_CONTROL) && wParam == 'O') {
+                OpenAn8FromDialog(editor);
+            } else if (IsKeyDown(VK_CONTROL) && wParam == 'S') {
+                SaveDocument(editor);
+            } else if (wParam == VK_DELETE) {
+                DeleteSelectedMesh(editor);
+            } else if (wParam == 'F') {
                 editor.focusPressed = true;
             } else if (wParam == VK_ESCAPE) {
                 editor.viewportActive = false;

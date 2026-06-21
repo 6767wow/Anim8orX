@@ -10,14 +10,17 @@ This repository currently contains the first editor-shell brick with an Anim8or-
 - Anim8orX-branded property deck with Setup, View, Material, Object, Figure, Sequence, Scene, and Render pages.
 - Branded `wlogo.png` logo displayed in the app chrome and used as the window icon.
 - World-space 3D grid in the viewport with camera-projected floor/depth guides.
+- Real Hierarchy panel next to the tool rail with selectable imported/generated mesh nodes.
 - Custom dark in-viewport view selector for All, Front, Back, Left, Right, Top, Bottom, Ortho, and Perspective.
-- File loading through `File > Open .an8...`, drag-and-drop `.an8` files, command-line file arguments, or the bundled sample.
+- File loading through `File > Open .an8...`, `Import`, drag-and-drop `.an8` files, command-line file arguments, or the bundled sample.
+- File saving through `File > Save`, `Save As...`, and `Export` for current mesh documents.
 - UniverseLib-inspired dock entry points and bottom dock for Explorer, Inspector, Console, Materials, and Timeline.
-- Tool surface for selection, transforms, primitive shapes, UV tools, rigging, keys, extrude, lathe, subdivision, camera, and light workflows.
-- Visible parameter surface for grid/snap preferences, viewport display flags, material shader values, primitive dimensions, modifier inputs, bone/DOF constraints, sequence interpolation, scene actor/camera/light controls, and render output options.
+- Working Build commands for cube, sphere, cylinder, cone, torus, text helper, bone helper, camera helper, and light helper nodes.
+- Working Object commands for delete, extrude, inset, lathe, mirror, and face subdivision.
+- Visible parameter surface for live grid/snap preferences, viewport display flags, material shader values, primitive dimensions, modifier inputs, bone/DOF constraints, sequence interpolation, scene actor/camera/light controls, and render output options.
 - Default cube viewport rendered at launch.
-- Self-contained C++17 viewport camera controller with RMB+WASD fly, Alt+LMB orbit, Alt+MMB pan, scroll dolly, and F focus support.
-- Self-contained C++17 `.an8` lexer/parser for objects, meshes, points, faces, and triangle-list geometry preparation.
+- Self-contained C++17 viewport camera controller with RMB+WASD fly, RMB+mouse wheel fly-speed adjustment, Alt+LMB orbit, Alt+MMB pan, scroll dolly, and F focus support.
+- Self-contained C++17 `.an8` lexer/parser for objects, groups, meshes, primitive components, points, nested face point-data, and triangle-list geometry preparation.
 
 ## Build
 
@@ -39,6 +42,8 @@ For automated verification:
 
 ```powershell
 .\build\Release\Anim8orX.exe --smoke-test
+.\build\Release\Anim8orX.exe --smoke-test .\examples\nested-face.an8
+.\build\Release\Anim8orX.exe --smoke-test .\examples\primitive-components.an8
 ```
 
 On single-config generators, the executable may be under `build\Anim8orX.exe`.
@@ -50,6 +55,8 @@ include/Anim8orX/Viewport/Camera.hpp     Unity-style viewport camera math
 include/Anim8orX/Import/An8Parser.hpp    Native .an8 parser and triangulation
 docs/architecture/Step1_Blueprint.md     UI and engine architecture blueprint
 examples/cube.an8                        Minimal parser test asset
+examples/nested-face.an8                 Nested Anim8or face point-data parser test
+examples/primitive-components.an8         Cube/sphere/cylinder component parser test
 assets/wlogo.png                         Anim8orX logo asset
 src/main.cpp                             Native editor shell
 ```

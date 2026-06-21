@@ -7,17 +7,23 @@ Use it to verify:
 - Default GUI launch.
 - Native Anim8or-like menu bar and compact command strip.
 - Anim8orX logo in the command strip and window icon.
-- File loading through `File > Open .an8...` and drag-and-drop.
+- File loading through `File > Open .an8...`, `Import`, drag-and-drop, and command-line paths.
+- File saving through `File > Save`, `Save As...`, and `Export`.
 - Slim left modeling rail with mode, coordinate, axis, tool, UV, shape, rig, and key groups.
+- Separate selectable Hierarchy panel for scene graph mesh nodes.
 - Anim8or-style Object, Figure, Sequence, and Scene modes.
 - UniverseLib-style dock entry points for Explorer, Inspector, Console, Materials, and Timeline.
 - Anim8orX property deck pages for Setup, View, Material, Object, Figure, Sequence, Scene, and Render.
 - Unity-style viewport camera input path.
+- RMB+mouse wheel fly-speed adjustment.
 - World-space 3D grid and custom dark view selector.
-- Native `.an8` file loading.
-- Object and mesh discovery.
-- Point and face parsing.
+- Native `.an8` file loading for object/group/mesh and common primitive component chunks.
+- Object, group, mesh, and helper-node discovery.
+- Point parsing and Anim8or nested face point-data parsing.
 - Quad-to-triangle geometry preparation.
+- Working Build primitives/helpers: cube, sphere, cylinder, cone, torus, text helper, bone helper, camera helper, and light helper.
+- Working Object actions: delete, extrude, inset, lathe, mirror, and face subdivision.
+- Live viewport toggles for grid, axes, normals, and backface culling.
 - Default cube wireframe in a gray grid viewport.
 
 ## Run
@@ -35,4 +41,11 @@ You can also pass another text-based `.an8` file path:
 
 ```powershell
 .\Anim8orX.exe "C:\path\to\model.an8"
+```
+
+Bundled parser samples:
+
+```powershell
+.\Anim8orX.exe .\examples\nested-face.an8
+.\Anim8orX.exe .\examples\primitive-components.an8
 ```

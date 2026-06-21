@@ -5,12 +5,16 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <cmath>
+#include <initializer_list>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace anim8orx {
+
+constexpr float AN8_PI = 3.14159265358979323846f;
 
 struct An8Vector3 {
     float x = 0.0f;
@@ -366,6 +370,14 @@ private:
                         : object.name + "_Mesh_" + std::to_string(object.meshes.size());
                 }
                 object.meshes.push_back(std::move(mesh));
+            } else if (IsPrimitiveComponent()) {
+                const std::string kind = current_.text;
+                Advance();
+                An8Mesh mesh = ParsePrimitiveComponent(kind);
+                if (mesh.name.empty()) {
+                    mesh.name = kind + "_" + std::to_string(object.meshes.size());
+                }
+                object.meshes.push_back(std::move(mesh));
             } else if (CheckIdentifier("object")) {
                 Advance();
                 An8Object child = ParseObject();
@@ -373,6 +385,15 @@ private:
                     child.name = "Child_" + std::to_string(object.children.size());
                 }
                 object.children.push_back(std::move(child));
+            } else if (CheckIdentifier("group")) {
+                Advance();
+                An8Object group = ParseGroup();
+                if (group.name.empty()) {
+                    group.name = "Group_" + std::to_string(object.children.size());
+                }
+                object.children.push_back(std::move(group));
+            } else if (CheckIdentifier("name")) {
+                ParseNameProperty(object.name);
             } else if (Check(An8TokenKind::String) && object.name.empty()) {
                 object.name = current_.text;
                 Advance();
@@ -385,8 +406,61 @@ private:
         return object;
     }
 
+    An8Object ParseGroup() {
+        An8Object group;
+
+        if (Check(An8TokenKind::String)) {
+            group.name = current_.text;
+            Advance();
+        }
+
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after group")) {
+            return group;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("mesh")) {
+                Advance();
+                An8Mesh mesh = ParseMesh();
+                if (mesh.name.empty()) {
+                    mesh.name = group.name.empty()
+                        ? "Mesh_" + std::to_string(group.meshes.size())
+                        : group.name + "_Mesh_" + std::to_string(group.meshes.size());
+                }
+                group.meshes.push_back(std::move(mesh));
+            } else if (IsPrimitiveComponent()) {
+                const std::string kind = current_.text;
+                Advance();
+                An8Mesh mesh = ParsePrimitiveComponent(kind);
+                if (mesh.name.empty()) {
+                    mesh.name = kind + "_" + std::to_string(group.meshes.size());
+                }
+                group.meshes.push_back(std::move(mesh));
+            } else if (CheckIdentifier("group")) {
+                Advance();
+                An8Object child = ParseGroup();
+                if (child.name.empty()) {
+                    child.name = "Group_" + std::to_string(group.children.size());
+                }
+                group.children.push_back(std::move(child));
+            } else if (CheckIdentifier("name")) {
+                ParseNameProperty(group.name);
+            } else if (Check(An8TokenKind::String) && group.name.empty()) {
+                group.name = current_.text;
+                Advance();
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' to close group");
+        return group;
+    }
+
     An8Mesh ParseMesh() {
         An8Mesh mesh;
+        An8Vector3 baseOrigin{};
+        bool hasBaseOrigin = false;
 
         if (Check(An8TokenKind::String)) {
             mesh.name = current_.text;
@@ -398,7 +472,10 @@ private:
         }
 
         while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
-            if (CheckIdentifier("name")) {
+            if (Check(An8TokenKind::String) && mesh.name.empty()) {
+                mesh.name = current_.text;
+                Advance();
+            } else if (CheckIdentifier("name")) {
                 ParseNameProperty(mesh.name);
             } else if (CheckIdentifier("points")) {
                 Advance();
@@ -406,13 +483,378 @@ private:
             } else if (CheckIdentifier("faces")) {
                 Advance();
                 mesh.faces = ParseFaces();
+            } else if (CheckIdentifier("base")) {
+                Advance();
+                if (ParseBaseOrigin(baseOrigin)) {
+                    hasBaseOrigin = true;
+                }
             } else {
                 SkipPropertyOrBlock();
             }
         }
 
         Expect(An8TokenKind::RBrace, "expected '}' to close mesh");
+        if (hasBaseOrigin) {
+            TranslateMesh(mesh, baseOrigin);
+        }
         return mesh;
+    }
+
+    bool IsPrimitiveComponent() const {
+        return CheckIdentifier("cube") ||
+               CheckIdentifier("sphere") ||
+               CheckIdentifier("cylinder");
+    }
+
+    An8Mesh ParsePrimitiveComponent(const std::string& kind) {
+        std::string name = kind;
+        An8Vector3 baseOrigin{};
+        bool hasBaseOrigin = false;
+
+        float cubeX = 2.0f;
+        float cubeY = 2.0f;
+        float cubeZ = 2.0f;
+
+        float sphereRadius = 1.0f;
+        int sphereRings = 12;
+        int sphereSegments = 24;
+
+        float cylinderLength = 2.0f;
+        float cylinderBottomRadius = 1.0f;
+        float cylinderTopRadius = 1.0f;
+        bool hasTopDiameter = false;
+        bool capStart = false;
+        bool capEnd = false;
+        int cylinderSegments = 24;
+
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after primitive component")) {
+            return {};
+        }
+
+        if (Check(An8TokenKind::String)) {
+            name = current_.text;
+            Advance();
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (Check(An8TokenKind::String) && name == kind) {
+                name = current_.text;
+                Advance();
+            } else if (CheckIdentifier("name")) {
+                ParseNameProperty(name);
+            } else if (CheckIdentifier("base")) {
+                Advance();
+                if (ParseBaseOrigin(baseOrigin)) {
+                    hasBaseOrigin = true;
+                }
+            } else if (kind == "cube" && CheckIdentifier("size")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(3, "expected '{' after size");
+                if (!values.empty()) {
+                    cubeX = static_cast<float>(values[0]);
+                    cubeY = values.size() > 1 ? static_cast<float>(values[1]) : cubeX;
+                    cubeZ = values.size() > 2 ? static_cast<float>(values[2]) : cubeX;
+                }
+            } else if (kind == "sphere" && CheckIdentifier("diameter")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(1, "expected '{' after diameter");
+                if (!values.empty()) {
+                    sphereRadius = std::max(0.01f, static_cast<float>(values[0]) * 0.5f);
+                }
+            } else if (kind == "sphere" && CheckIdentifier("radius")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(1, "expected '{' after radius");
+                if (!values.empty()) {
+                    sphereRadius = std::max(0.01f, static_cast<float>(values[0]));
+                }
+            } else if (kind == "sphere" && CheckIdentifier("longlat")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(2, "expected '{' after longlat");
+                if (values.size() >= 2) {
+                    sphereRings = std::max(3, static_cast<int>(values[0]));
+                    sphereSegments = std::max(6, static_cast<int>(values[1]));
+                }
+            } else if (kind == "sphere" && CheckIdentifier("geodesic")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(1, "expected '{' after geodesic");
+                if (!values.empty()) {
+                    const int detail = std::max(1, static_cast<int>(values[0]));
+                    sphereRings = std::clamp(detail * 4, 4, 48);
+                    sphereSegments = std::clamp(detail * 8, 8, 96);
+                }
+            } else if (kind == "cylinder" && CheckIdentifier("length")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(1, "expected '{' after length");
+                if (!values.empty()) {
+                    cylinderLength = std::max(0.01f, static_cast<float>(values[0]));
+                }
+            } else if (kind == "cylinder" && CheckIdentifier("diameter")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(1, "expected '{' after diameter");
+                if (!values.empty()) {
+                    cylinderBottomRadius = std::max(0.0f, static_cast<float>(values[0]) * 0.5f);
+                    if (!hasTopDiameter) {
+                        cylinderTopRadius = cylinderBottomRadius;
+                    }
+                }
+            } else if (kind == "cylinder" && CheckIdentifier("topdiameter")) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(1, "expected '{' after topdiameter");
+                if (!values.empty()) {
+                    cylinderTopRadius = std::max(0.0f, static_cast<float>(values[0]) * 0.5f);
+                    hasTopDiameter = true;
+                }
+            } else if (kind == "cylinder" && (CheckIdentifier("segments") || CheckIdentifier("longlat") || CheckIdentifier("divisions"))) {
+                Advance();
+                const std::vector<double> values = ParseNumberChunk(2, "expected '{' after segment count");
+                if (!values.empty()) {
+                    cylinderSegments = std::max(3, static_cast<int>(values.back()));
+                }
+            } else if (kind == "cylinder" && CheckIdentifier("capstart")) {
+                Advance();
+                capStart = true;
+                if (Check(An8TokenKind::LBrace)) {
+                    SkipBalancedBlock();
+                }
+            } else if (kind == "cylinder" && CheckIdentifier("capend")) {
+                Advance();
+                capEnd = true;
+                if (Check(An8TokenKind::LBrace)) {
+                    SkipBalancedBlock();
+                }
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' to close primitive component");
+
+        An8Mesh mesh;
+        if (kind == "cube") {
+            mesh = BuildCubePrimitive(name, cubeX, cubeY, cubeZ);
+        } else if (kind == "sphere") {
+            mesh = BuildSpherePrimitive(name, sphereRadius, sphereRings, sphereSegments);
+        } else if (kind == "cylinder") {
+            mesh = BuildCylinderPrimitive(name, cylinderTopRadius, cylinderBottomRadius, cylinderLength, cylinderSegments, capStart, capEnd);
+        }
+
+        if (hasBaseOrigin) {
+            TranslateMesh(mesh, baseOrigin);
+        }
+        return mesh;
+    }
+
+    bool ParseBaseOrigin(An8Vector3& outOrigin) {
+        bool found = false;
+        if (!Expect(An8TokenKind::LBrace, "expected '{' after base")) {
+            return false;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (CheckIdentifier("origin")) {
+                Advance();
+                if (ParseVector3Chunk(outOrigin, "expected '{' after origin")) {
+                    found = true;
+                }
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' after base");
+        return found;
+    }
+
+    bool ParseVector3Chunk(An8Vector3& outVector, const char* message) {
+        if (!Expect(An8TokenKind::LBrace, message)) {
+            return false;
+        }
+
+        bool parsed = false;
+        if (Check(An8TokenKind::LParen)) {
+            outVector = ParseVector3();
+            parsed = true;
+        } else {
+            std::vector<double> values;
+            while (!Check(An8TokenKind::End) &&
+                   !Check(An8TokenKind::RBrace) &&
+                   values.size() < 3) {
+                if (Check(An8TokenKind::Number)) {
+                    values.push_back(current_.number);
+                    Advance();
+                } else {
+                    SkipPropertyOrBlock();
+                }
+            }
+
+            if (values.size() >= 3) {
+                outVector.x = static_cast<float>(values[0]);
+                outVector.y = static_cast<float>(values[1]);
+                outVector.z = static_cast<float>(values[2]);
+                parsed = true;
+            }
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            SkipPropertyOrBlock();
+        }
+        Expect(An8TokenKind::RBrace, "expected '}' after vector chunk");
+        return parsed;
+    }
+
+    std::vector<double> ParseNumberChunk(size_t maxValues, const char* message) {
+        std::vector<double> values;
+        if (!Expect(An8TokenKind::LBrace, message)) {
+            return values;
+        }
+
+        while (!Check(An8TokenKind::End) && !Check(An8TokenKind::RBrace)) {
+            if (Check(An8TokenKind::Number)) {
+                if (values.size() < maxValues) {
+                    values.push_back(current_.number);
+                }
+                Advance();
+            } else {
+                SkipPropertyOrBlock();
+            }
+        }
+
+        Expect(An8TokenKind::RBrace, "expected '}' after numeric chunk");
+        return values;
+    }
+
+    static An8Face MakePrimitiveFace(std::initializer_list<uint32_t> indices) {
+        An8Face face;
+        face.indices.assign(indices.begin(), indices.end());
+        return face;
+    }
+
+    static An8Mesh BuildCubePrimitive(const std::string& name, float sx, float sy, float sz) {
+        const float hx = std::max(std::abs(sx) * 0.5f, 0.01f);
+        const float hy = std::max(std::abs(sy) * 0.5f, 0.01f);
+        const float hz = std::max(std::abs(sz) * 0.5f, 0.01f);
+
+        An8Mesh mesh;
+        mesh.name = name;
+        mesh.points = {
+            {-hx, -hy, -hz},
+            { hx, -hy, -hz},
+            { hx,  hy, -hz},
+            {-hx,  hy, -hz},
+            {-hx, -hy,  hz},
+            { hx, -hy,  hz},
+            { hx,  hy,  hz},
+            {-hx,  hy,  hz}
+        };
+        mesh.faces = {
+            MakePrimitiveFace({0, 1, 2, 3}),
+            MakePrimitiveFace({4, 7, 6, 5}),
+            MakePrimitiveFace({0, 4, 5, 1}),
+            MakePrimitiveFace({1, 5, 6, 2}),
+            MakePrimitiveFace({2, 6, 7, 3}),
+            MakePrimitiveFace({3, 7, 4, 0})
+        };
+        return mesh;
+    }
+
+    static An8Mesh BuildSpherePrimitive(const std::string& name, float radius, int rings, int segments) {
+        An8Mesh mesh;
+        mesh.name = name;
+        radius = std::max(radius, 0.01f);
+        rings = std::max(3, rings);
+        segments = std::max(6, segments);
+
+        mesh.points.push_back({0.0f, radius, 0.0f});
+        for (int r = 1; r < rings; ++r) {
+            const float v = static_cast<float>(r) / static_cast<float>(rings);
+            const float phi = v * AN8_PI;
+            const float y = std::cos(phi) * radius;
+            const float ringRadius = std::sin(phi) * radius;
+            for (int s = 0; s < segments; ++s) {
+                const float u = static_cast<float>(s) / static_cast<float>(segments);
+                const float theta = u * 2.0f * AN8_PI;
+                mesh.points.push_back({std::cos(theta) * ringRadius, y, std::sin(theta) * ringRadius});
+            }
+        }
+
+        const uint32_t bottomIndex = static_cast<uint32_t>(mesh.points.size());
+        mesh.points.push_back({0.0f, -radius, 0.0f});
+
+        for (int s = 0; s < segments; ++s) {
+            mesh.faces.push_back(MakePrimitiveFace({0, static_cast<uint32_t>(1 + s), static_cast<uint32_t>(1 + ((s + 1) % segments))}));
+        }
+
+        for (int r = 0; r < rings - 2; ++r) {
+            const uint32_t row0 = static_cast<uint32_t>(1 + r * segments);
+            const uint32_t row1 = static_cast<uint32_t>(1 + (r + 1) * segments);
+            for (int s = 0; s < segments; ++s) {
+                mesh.faces.push_back(MakePrimitiveFace({
+                    row0 + static_cast<uint32_t>(s),
+                    row0 + static_cast<uint32_t>((s + 1) % segments),
+                    row1 + static_cast<uint32_t>((s + 1) % segments),
+                    row1 + static_cast<uint32_t>(s)
+                }));
+            }
+        }
+
+        const uint32_t lastRow = static_cast<uint32_t>(1 + (rings - 2) * segments);
+        for (int s = 0; s < segments; ++s) {
+            mesh.faces.push_back(MakePrimitiveFace({lastRow + static_cast<uint32_t>((s + 1) % segments), lastRow + static_cast<uint32_t>(s), bottomIndex}));
+        }
+        return mesh;
+    }
+
+    static An8Mesh BuildCylinderPrimitive(const std::string& name, float topRadius, float bottomRadius, float height, int segments, bool capStart, bool capEnd) {
+        An8Mesh mesh;
+        mesh.name = name;
+        topRadius = std::max(topRadius, 0.0f);
+        bottomRadius = std::max(bottomRadius, 0.0f);
+        height = std::max(height, 0.01f);
+        segments = std::max(3, segments);
+        const float half = height * 0.5f;
+
+        for (int i = 0; i < segments; ++i) {
+            const float a = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0f * AN8_PI;
+            mesh.points.push_back({std::cos(a) * bottomRadius, -half, std::sin(a) * bottomRadius});
+        }
+        for (int i = 0; i < segments; ++i) {
+            const float a = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0f * AN8_PI;
+            mesh.points.push_back({std::cos(a) * topRadius, half, std::sin(a) * topRadius});
+        }
+
+        for (int i = 0; i < segments; ++i) {
+            const uint32_t b0 = static_cast<uint32_t>(i);
+            const uint32_t b1 = static_cast<uint32_t>((i + 1) % segments);
+            const uint32_t t1 = static_cast<uint32_t>(segments + ((i + 1) % segments));
+            const uint32_t t0 = static_cast<uint32_t>(segments + i);
+            mesh.faces.push_back(MakePrimitiveFace({b0, b1, t1, t0}));
+        }
+
+        if (capStart && bottomRadius > 0.0001f) {
+            An8Face bottom;
+            for (int i = 0; i < segments; ++i) {
+                bottom.indices.push_back(static_cast<uint32_t>(segments - 1 - i));
+            }
+            mesh.faces.push_back(std::move(bottom));
+        }
+
+        if (capEnd && topRadius > 0.0001f) {
+            An8Face top;
+            for (int i = 0; i < segments; ++i) {
+                top.indices.push_back(static_cast<uint32_t>(segments + i));
+            }
+            mesh.faces.push_back(std::move(top));
+        }
+
+        return mesh;
+    }
+
+    static void TranslateMesh(An8Mesh& mesh, const An8Vector3& delta) {
+        for (An8Vector3& point : mesh.points) {
+            point.x += delta.x;
+            point.y += delta.y;
+            point.z += delta.z;
+        }
     }
 
     void ParseNameProperty(std::string& outName) {
@@ -495,21 +937,7 @@ private:
                 continue;
             }
 
-            An8Face face;
-            while (!Check(An8TokenKind::End) &&
-                   !Check(An8TokenKind::RBrace) &&
-                   !Check(An8TokenKind::RParen)) {
-                if (Check(An8TokenKind::Number)) {
-                    const int index = ReadInt("expected face index");
-                    if (index >= 0) {
-                        face.indices.push_back(static_cast<uint32_t>(index));
-                    } else {
-                        Warning("negative face index ignored");
-                    }
-                } else {
-                    Advance();
-                }
-            }
+            An8Face face = ParseFacePointData();
 
             Expect(An8TokenKind::RParen, "expected ')' after face indices");
 
@@ -526,6 +954,62 @@ private:
 
         Expect(An8TokenKind::RBrace, "expected '}' to close faces");
         return faces;
+    }
+
+    An8Face ParseFacePointData() {
+        An8Face face;
+
+        if (Check(An8TokenKind::LParen)) {
+            while (!Check(An8TokenKind::End) &&
+                   !Check(An8TokenKind::RBrace) &&
+                   Check(An8TokenKind::LParen)) {
+                Advance(); // point-data tuple
+
+                bool capturedPointIndex = false;
+                while (!Check(An8TokenKind::End) &&
+                       !Check(An8TokenKind::RBrace) &&
+                       !Check(An8TokenKind::RParen)) {
+                    if (Check(An8TokenKind::Number)) {
+                        const int index = ReadInt("expected point-data index");
+                        if (!capturedPointIndex) {
+                            if (index >= 0) {
+                                face.indices.push_back(static_cast<uint32_t>(index));
+                            } else {
+                                Warning("negative face point index ignored");
+                            }
+                            capturedPointIndex = true;
+                        }
+                    } else if (Check(An8TokenKind::LParen)) {
+                        SkipBalancedParens();
+                    } else {
+                        Advance();
+                    }
+                }
+
+                Expect(An8TokenKind::RParen, "expected ')' after face point-data tuple");
+            }
+
+            return face;
+        }
+
+        while (!Check(An8TokenKind::End) &&
+               !Check(An8TokenKind::RBrace) &&
+               !Check(An8TokenKind::RParen)) {
+            if (Check(An8TokenKind::Number)) {
+                const int index = ReadInt("expected face index");
+                if (index >= 0) {
+                    face.indices.push_back(static_cast<uint32_t>(index));
+                } else {
+                    Warning("negative face index ignored");
+                }
+            } else if (Check(An8TokenKind::LParen)) {
+                SkipBalancedParens();
+            } else {
+                Advance();
+            }
+        }
+
+        return face;
     }
 
     float ReadFloat(const char* message) {
