@@ -142,6 +142,11 @@ struct EditorState {
     HFONT smallFont = nullptr;
     std::unique_ptr<Gdiplus::Image> logoImage;
     HICON logoIcon = nullptr;
+    HDC backBufferDc = nullptr;
+    HBITMAP backBufferBitmap = nullptr;
+    HGDIOBJ backBufferOldBitmap = nullptr;
+    int backBufferWidth = 0;
+    int backBufferHeight = 0;
 
     An8Document document;
     std::vector<MeshView> meshes;
@@ -155,6 +160,7 @@ struct EditorState {
     bool middleMouseDown = false;
     bool focusPressed = false;
     bool viewMenuOpen = false;
+    bool frameTimerActive = false;
     POINT lastMouse = {};
     float accumulatedMouseDx = 0.0f;
     float accumulatedMouseDy = 0.0f;
@@ -162,6 +168,11 @@ struct EditorState {
 
     Vec3 selectionCenter = {0.0f, 0.0f, 0.0f};
     float selectionRadius = 1.5f;
+    Vec3 projectionForward = {0.0f, 0.0f, -1.0f};
+    Vec3 projectionRight = {1.0f, 0.0f, 0.0f};
+    Vec3 projectionUp = {0.0f, 1.0f, 0.0f};
+    float projectionAspect = 1.0f;
+    float projectionTanHalfFov = 0.57735026f;
 
     bool showGrid = true;
     bool showAxes = true;
@@ -1274,30 +1285,86 @@ HPEN CreatePenSolid(COLORREF color, int width = 1) {
     return CreatePen(PS_SOLID, width, color);
 }
 
+struct CachedBrush {
+    COLORREF color = 0;
+    HBRUSH handle = nullptr;
+};
+
+struct CachedPen {
+    COLORREF color = 0;
+    int width = 1;
+    HPEN handle = nullptr;
+};
+
+struct GdiCache {
+    std::vector<CachedBrush> brushes;
+    std::vector<CachedPen> pens;
+
+    ~GdiCache() {
+        for (const CachedBrush& brush : brushes) {
+            if (brush.handle != nullptr) {
+                DeleteObject(brush.handle);
+            }
+        }
+        for (const CachedPen& pen : pens) {
+            if (pen.handle != nullptr) {
+                DeleteObject(pen.handle);
+            }
+        }
+    }
+
+    HBRUSH Brush(COLORREF color) {
+        for (const CachedBrush& brush : brushes) {
+            if (brush.color == color) {
+                return brush.handle;
+            }
+        }
+
+        HBRUSH handle = CreateBrush(color);
+        brushes.push_back({color, handle});
+        return handle;
+    }
+
+    HPEN Pen(COLORREF color, int width) {
+        width = std::max(1, width);
+        for (const CachedPen& pen : pens) {
+            if (pen.color == color && pen.width == width) {
+                return pen.handle;
+            }
+        }
+
+        HPEN handle = CreatePenSolid(color, width);
+        pens.push_back({color, width, handle});
+        return handle;
+    }
+};
+
+GdiCache& CachedGdi() {
+    static GdiCache cache;
+    return cache;
+}
+
 void Fill(HDC dc, const RectI& rect, COLORREF color) {
-    HBRUSH brush = CreateBrush(color);
+    HBRUSH brush = CachedGdi().Brush(color);
     RECT nativeRect = rect.ToRECT();
     FillRect(dc, &nativeRect, brush);
-    DeleteObject(brush);
 }
 
 void Stroke(HDC dc, const RectI& rect, COLORREF color) {
-    HPEN pen = CreatePenSolid(color);
+    HPEN pen = CachedGdi().Pen(color, 1);
     HGDIOBJ oldPen = SelectObject(dc, pen);
     HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
     Rectangle(dc, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
-    DeleteObject(pen);
 }
 
 void DrawLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, int width = 1) {
-    HPEN pen = CreatePenSolid(color, width);
+    HPEN pen = CachedGdi().Pen(color, width);
     HGDIOBJ oldPen = SelectObject(dc, pen);
     MoveToEx(dc, x1, y1, nullptr);
     LineTo(dc, x2, y2);
     SelectObject(dc, oldPen);
-    DeleteObject(pen);
 }
 
 void Text(HDC dc, const std::wstring& text, int x, int y, int w, int h, COLORREF color, HFONT font, UINT format = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS) {
@@ -1332,20 +1399,16 @@ ProjectionPoint ProjectPoint(const EditorState& editor, const An8Vector3& point)
 
     const Vec3 world = {point.x, point.y, point.z};
     const Vec3 rel = world - editor.camera.position;
-    const float z = anim8orx::Dot(rel, editor.camera.Forward());
+    const float z = anim8orx::Dot(rel, editor.projectionForward);
     if (z <= 0.02f) {
         return projected;
     }
 
-    const float x = anim8orx::Dot(rel, editor.camera.Right());
-    const float y = anim8orx::Dot(rel, editor.camera.Up());
-    const float aspect = viewport.h > 0
-        ? static_cast<float>(viewport.w) / static_cast<float>(viewport.h)
-        : 1.0f;
-    const float tanHalfFov = std::tan(editor.camera.verticalFovRadians * 0.5f);
+    const float x = anim8orx::Dot(rel, editor.projectionRight);
+    const float y = anim8orx::Dot(rel, editor.projectionUp);
 
-    const float ndcX = x / (z * tanHalfFov * aspect);
-    const float ndcY = y / (z * tanHalfFov);
+    const float ndcX = x / (z * editor.projectionTanHalfFov * editor.projectionAspect);
+    const float ndcY = y / (z * editor.projectionTanHalfFov);
 
     projected.p.x = viewport.x + static_cast<LONG>((ndcX * 0.5f + 0.5f) * static_cast<float>(viewport.w));
     projected.p.y = viewport.y + static_cast<LONG>((0.5f - ndcY * 0.5f) * static_cast<float>(viewport.h));
@@ -1354,6 +1417,17 @@ ProjectionPoint ProjectPoint(const EditorState& editor, const An8Vector3& point)
                         projected.p.y > viewport.y - 1000 &&
                         projected.p.y < viewport.y + viewport.h + 1000;
     return projected;
+}
+
+void UpdateProjectionCache(EditorState& editor) {
+    editor.projectionForward = editor.camera.Forward();
+    editor.projectionRight = editor.camera.Right();
+    editor.projectionUp = editor.camera.Up();
+    editor.projectionAspect = editor.layout.viewport.h > 0
+        ? static_cast<float>(editor.layout.viewport.w) / static_cast<float>(editor.layout.viewport.h)
+        : 1.0f;
+    editor.projectionAspect = std::max(editor.projectionAspect, 0.0001f);
+    editor.projectionTanHalfFov = std::tan(editor.camera.verticalFovRadians * 0.5f);
 }
 
 void DrawWorldLine(HDC dc, const EditorState& editor, const An8Vector3& a, const An8Vector3& b, COLORREF color, int width = 1) {
@@ -1381,7 +1455,7 @@ void DrawSmallButton(HDC dc, const EditorState& editor, const RectI& rect, const
 void DrawIconGlyph(HDC dc, const RectI& rect, int glyph, COLORREF color) {
     const int cx = rect.x + rect.w / 2;
     const int cy = rect.y + rect.h / 2;
-    HPEN pen = CreatePenSolid(color, 1);
+    HPEN pen = CachedGdi().Pen(color, 1);
     HGDIOBJ oldPen = SelectObject(dc, pen);
     HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
 
@@ -1460,7 +1534,6 @@ void DrawIconGlyph(HDC dc, const RectI& rect, int glyph, COLORREF color) {
 
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
-    DeleteObject(pen);
 }
 
 void DrawIconButton(HDC dc, const EditorState& editor, const RectI& rect, int glyph, bool active = false) {
@@ -1896,6 +1969,11 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
         const bool selected = static_cast<int>(meshIndex) == editor.selectedMesh;
         const COLORREF color = selected ? Rgb(239, 189, 87) : Rgb(192, 199, 207);
         const int width = selected ? 2 : 1;
+        std::vector<ProjectionPoint> projectedPoints;
+        projectedPoints.reserve(mesh.points.size());
+        for (const An8Vector3& point : mesh.points) {
+            projectedPoints.push_back(ProjectPoint(editor, point));
+        }
 
         for (const An8Face& face : mesh.faces) {
             if (face.indices.size() < 2) {
@@ -1943,10 +2021,16 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
             for (size_t i = 0; i < face.indices.size(); ++i) {
                 const uint32_t a = face.indices[i];
                 const uint32_t b = face.indices[(i + 1) % face.indices.size()];
-                if (a >= mesh.points.size() || b >= mesh.points.size()) {
+                if (a >= projectedPoints.size() || b >= projectedPoints.size()) {
                     continue;
                 }
-                DrawWorldLine(dc, editor, mesh.points[a], mesh.points[b], color, width);
+
+                const ProjectionPoint& pa = projectedPoints[a];
+                const ProjectionPoint& pb = projectedPoints[b];
+                if (!pa.visible || !pb.visible) {
+                    continue;
+                }
+                DrawLine(dc, pa.p.x, pa.p.y, pb.p.x, pb.p.y, color, width);
             }
 
             if (editor.showNormals && face.indices.size() >= 3) {
@@ -2072,27 +2156,71 @@ void DrawStatus(HDC dc, const EditorState& editor) {
     Text(dc, right, status.w - 260, status.y, 252, status.h, Rgb(255, 148, 0), editor.smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 }
 
+void ReleaseBackBuffer(EditorState& editor) {
+    if (editor.backBufferDc != nullptr && editor.backBufferOldBitmap != nullptr) {
+        SelectObject(editor.backBufferDc, editor.backBufferOldBitmap);
+    }
+    if (editor.backBufferBitmap != nullptr) {
+        DeleteObject(editor.backBufferBitmap);
+    }
+    if (editor.backBufferDc != nullptr) {
+        DeleteDC(editor.backBufferDc);
+    }
+
+    editor.backBufferDc = nullptr;
+    editor.backBufferBitmap = nullptr;
+    editor.backBufferOldBitmap = nullptr;
+    editor.backBufferWidth = 0;
+    editor.backBufferHeight = 0;
+}
+
+bool EnsureBackBuffer(EditorState& editor, HDC windowDc) {
+    if (editor.backBufferDc != nullptr &&
+        editor.backBufferBitmap != nullptr &&
+        editor.backBufferWidth == editor.width &&
+        editor.backBufferHeight == editor.height) {
+        return true;
+    }
+
+    ReleaseBackBuffer(editor);
+
+    editor.backBufferDc = CreateCompatibleDC(windowDc);
+    if (editor.backBufferDc == nullptr) {
+        return false;
+    }
+
+    editor.backBufferBitmap = CreateCompatibleBitmap(windowDc, editor.width, editor.height);
+    if (editor.backBufferBitmap == nullptr) {
+        ReleaseBackBuffer(editor);
+        return false;
+    }
+
+    editor.backBufferOldBitmap = SelectObject(editor.backBufferDc, editor.backBufferBitmap);
+    editor.backBufferWidth = editor.width;
+    editor.backBufferHeight = editor.height;
+    return editor.backBufferOldBitmap != nullptr;
+}
+
 void PaintEditor(HWND hwnd, EditorState& editor) {
     PAINTSTRUCT ps{};
     HDC windowDc = BeginPaint(hwnd, &ps);
-    HDC dc = CreateCompatibleDC(windowDc);
-    HBITMAP bitmap = CreateCompatibleBitmap(windowDc, editor.width, editor.height);
-    HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
+    const bool buffered = EnsureBackBuffer(editor, windowDc);
+    HDC dc = buffered ? editor.backBufferDc : windowDc;
 
     Fill(dc, {0, 0, editor.width, editor.height}, Rgb(18, 20, 25));
     DrawTopBar(dc, editor);
     DrawToolBar(dc, editor);
     DrawHierarchy(dc, editor);
+    UpdateProjectionCache(editor);
     DrawViewport(dc, editor);
     DrawInspector(dc, editor);
     DrawConsole(dc, editor);
     DrawStatus(dc, editor);
     DrawViewportViewPopup(dc, editor);
 
-    BitBlt(windowDc, 0, 0, editor.width, editor.height, dc, 0, 0, SRCCOPY);
-    SelectObject(dc, oldBitmap);
-    DeleteObject(bitmap);
-    DeleteDC(dc);
+    if (buffered) {
+        BitBlt(windowDc, 0, 0, editor.width, editor.height, dc, 0, 0, SRCCOPY);
+    }
     EndPaint(hwnd, &ps);
 }
 
@@ -2100,7 +2228,35 @@ bool IsKeyDown(int key) {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
-void TickCamera(EditorState& editor) {
+bool HasPendingViewportInput(const EditorState& editor) {
+    return editor.leftMouseDown ||
+           editor.middleMouseDown ||
+           editor.rightMouseDown ||
+           editor.focusPressed ||
+           std::abs(editor.accumulatedMouseDx) > 0.0001f ||
+           std::abs(editor.accumulatedMouseDy) > 0.0001f ||
+           std::abs(editor.accumulatedWheel) > 0.0001f;
+}
+
+void StartFrameTimer(HWND hwnd, EditorState& editor) {
+    if (editor.frameTimerActive) {
+        return;
+    }
+
+    SetTimer(hwnd, kFrameTimerId, kFrameMillis, nullptr);
+    editor.frameTimerActive = true;
+}
+
+void StopFrameTimer(HWND hwnd, EditorState& editor) {
+    if (!editor.frameTimerActive || HasPendingViewportInput(editor)) {
+        return;
+    }
+
+    KillTimer(hwnd, kFrameTimerId);
+    editor.frameTimerActive = false;
+}
+
+bool TickCamera(EditorState& editor) {
     ViewportCameraInput input;
     input.viewportHovered = editor.viewportActive;
     input.rightMouseDown = editor.rightMouseDown;
@@ -2125,11 +2281,32 @@ void TickCamera(EditorState& editor) {
     input.selectionCenter = editor.selectionCenter;
     input.selectionRadius = editor.selectionRadius;
 
+    const Vec3 oldPosition = editor.camera.position;
+    const Vec3 oldFocus = editor.camera.focus;
+    const float oldYaw = editor.camera.yawRadians;
+    const float oldPitch = editor.camera.pitchRadians;
+    const float oldDistance = editor.camera.orbitDistance;
+    const float oldFlySpeed = editor.camera.flySpeed;
+
     editor.camera.Update(input);
     editor.accumulatedMouseDx = 0.0f;
     editor.accumulatedMouseDy = 0.0f;
     editor.accumulatedWheel = 0.0f;
     editor.focusPressed = false;
+
+    auto changed = [](float a, float b) {
+        return std::abs(a - b) > 0.00001f;
+    };
+    auto changedVec = [&](const Vec3& a, const Vec3& b) {
+        return changed(a.x, b.x) || changed(a.y, b.y) || changed(a.z, b.z);
+    };
+
+    return changedVec(oldPosition, editor.camera.position) ||
+           changedVec(oldFocus, editor.camera.focus) ||
+           changed(oldYaw, editor.camera.yawRadians) ||
+           changed(oldPitch, editor.camera.pitchRadians) ||
+           changed(oldDistance, editor.camera.orbitDistance) ||
+           changed(oldFlySpeed, editor.camera.flySpeed);
 }
 
 void CaptureViewportMouse(HWND hwnd, EditorState& editor, int x, int y) {
@@ -2137,11 +2314,15 @@ void CaptureViewportMouse(HWND hwnd, EditorState& editor, int x, int y) {
     editor.lastMouse = POINT{x, y};
     SetCapture(hwnd);
     SetFocus(hwnd);
+    StartFrameTimer(hwnd, editor);
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void ReleaseViewportMouse(EditorState& editor) {
     if (!editor.leftMouseDown && !editor.middleMouseDown && !editor.rightMouseDown) {
         ReleaseCapture();
+        StopFrameTimer(editor.hwnd, editor);
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
     }
 }
 
@@ -2418,7 +2599,6 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                                            DEFAULT_PITCH | FF_DONTCARE, L"Consolas");
             CalculateLayout(editor);
             DragAcceptFiles(hwnd, TRUE);
-            SetTimer(hwnd, kFrameTimerId, kFrameMillis, nullptr);
             return 0;
 
         case WM_SIZE:
@@ -2430,8 +2610,10 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 
         case WM_TIMER:
             if (wParam == kFrameTimerId) {
-                TickCamera(editor);
-                InvalidateRect(hwnd, nullptr, FALSE);
+                if (TickCamera(editor)) {
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                StopFrameTimer(hwnd, editor);
             }
             return 0;
 
@@ -2656,12 +2838,17 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
         case WM_MOUSEMOVE: {
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
+            const bool wasViewportActive = editor.viewportActive;
             if (editor.leftMouseDown || editor.middleMouseDown || editor.rightMouseDown) {
                 editor.accumulatedMouseDx += static_cast<float>(x - editor.lastMouse.x);
                 editor.accumulatedMouseDy += static_cast<float>(y - editor.lastMouse.y);
+                StartFrameTimer(hwnd, editor);
             }
             editor.viewportActive = editor.layout.viewport.Contains(x, y) || editor.leftMouseDown || editor.middleMouseDown || editor.rightMouseDown;
             editor.lastMouse = POINT{x, y};
+            if (wasViewportActive != editor.viewportActive) {
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             return 0;
         }
 
@@ -2671,6 +2858,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             if (editor.layout.viewport.Contains(screenPoint.x, screenPoint.y)) {
                 editor.viewportActive = true;
                 editor.accumulatedWheel += static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / static_cast<float>(WHEEL_DELTA);
+                StartFrameTimer(hwnd, editor);
             }
             return 0;
         }
@@ -2686,18 +2874,29 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 DeleteSelectedMesh(editor);
             } else if (wParam == 'F') {
                 editor.focusPressed = true;
+                StartFrameTimer(hwnd, editor);
             } else if (wParam == VK_ESCAPE) {
                 editor.viewportActive = false;
                 editor.leftMouseDown = false;
                 editor.middleMouseDown = false;
                 editor.rightMouseDown = false;
+                editor.accumulatedMouseDx = 0.0f;
+                editor.accumulatedMouseDy = 0.0f;
+                editor.accumulatedWheel = 0.0f;
+                editor.focusPressed = false;
                 ReleaseCapture();
+                StopFrameTimer(hwnd, editor);
+                InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
 
         case WM_DESTROY:
             DragAcceptFiles(hwnd, FALSE);
-            KillTimer(hwnd, kFrameTimerId);
+            if (editor.frameTimerActive) {
+                KillTimer(hwnd, kFrameTimerId);
+                editor.frameTimerActive = false;
+            }
+            ReleaseBackBuffer(editor);
             if (editor.font != nullptr) {
                 DeleteObject(editor.font);
             }
