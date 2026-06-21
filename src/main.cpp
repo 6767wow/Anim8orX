@@ -8,6 +8,8 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <commdlg.h>
+#include <gdiplus.h>
 
 #include <Anim8orX/Import/An8Parser.hpp>
 #include <Anim8orX/Viewport/Camera.hpp>
@@ -15,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -38,6 +41,30 @@ constexpr int kMenuModeObject = 1001;
 constexpr int kMenuModeFigure = 1002;
 constexpr int kMenuModeSequence = 1003;
 constexpr int kMenuModeScene = 1004;
+constexpr int kMenuFileNew = 1200;
+constexpr int kMenuFileOpen = 1201;
+constexpr int kMenuFileExit = 1202;
+constexpr int kMenuViewAll = 1100;
+constexpr int kMenuViewFront = 1101;
+constexpr int kMenuViewBack = 1102;
+constexpr int kMenuViewLeft = 1103;
+constexpr int kMenuViewRight = 1104;
+constexpr int kMenuViewTop = 1105;
+constexpr int kMenuViewBottom = 1106;
+constexpr int kMenuViewOrtho = 1107;
+constexpr int kMenuViewPerspective = 1108;
+
+enum class ViewMode {
+    All,
+    Front,
+    Back,
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Ortho,
+    Perspective
+};
 
 struct RectI {
     int x = 0;
@@ -85,6 +112,8 @@ struct EditorState {
     HFONT font = nullptr;
     HFONT boldFont = nullptr;
     HFONT smallFont = nullptr;
+    std::unique_ptr<Gdiplus::Image> logoImage;
+    HICON logoIcon = nullptr;
 
     An8Document document;
     std::vector<MeshView> meshes;
@@ -97,6 +126,7 @@ struct EditorState {
     bool leftMouseDown = false;
     bool middleMouseDown = false;
     bool focusPressed = false;
+    bool viewMenuOpen = false;
     POINT lastMouse = {};
     float accumulatedMouseDx = 0.0f;
     float accumulatedMouseDy = 0.0f;
@@ -109,9 +139,11 @@ struct EditorState {
     int activeTool = 0;
     int propertyPage = 3;
     int selectedMesh = 0;
+    ViewMode activeView = ViewMode::Perspective;
 };
 
 EditorState g_editor;
+ULONG_PTR g_gdiplusToken = 0;
 
 std::wstring ToWide(const std::string& text) {
     if (text.empty()) {
@@ -153,6 +185,52 @@ std::filesystem::path FindBundledSample() {
     }
 
     return {};
+}
+
+std::filesystem::path FindBundledLogo() {
+    const std::filesystem::path exeDir = ExecutableDirectory();
+    const std::vector<std::filesystem::path> candidates = {
+        exeDir / "assets" / "wlogo.png",
+        exeDir.parent_path() / "assets" / "wlogo.png",
+        std::filesystem::current_path() / "assets" / "wlogo.png"
+    };
+
+    for (const std::filesystem::path& candidate : candidates) {
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+
+    return {};
+}
+
+void AddConsoleLine(EditorState& editor, const std::wstring& line);
+
+void LoadLogo(EditorState& editor) {
+    const std::filesystem::path logoPath = FindBundledLogo();
+    if (logoPath.empty()) {
+        AddConsoleLine(editor, L"Logo asset not found.");
+        return;
+    }
+
+    const std::wstring widePath = logoPath.wstring();
+    auto image = std::make_unique<Gdiplus::Image>(widePath.c_str());
+    if (image->GetLastStatus() != Gdiplus::Ok) {
+        AddConsoleLine(editor, L"Failed to load logo asset.");
+        return;
+    }
+
+    editor.logoImage = std::move(image);
+
+    Gdiplus::Bitmap iconBitmap(widePath.c_str());
+    if (iconBitmap.GetLastStatus() == Gdiplus::Ok) {
+        HICON icon = nullptr;
+        if (iconBitmap.GetHICON(&icon) == Gdiplus::Ok && icon != nullptr) {
+            editor.logoIcon = icon;
+        }
+    }
+
+    AddConsoleLine(editor, L"Loaded logo: " + logoPath.wstring());
 }
 
 An8Document BuildFallbackCubeDocument() {
@@ -252,6 +330,60 @@ void RecalculateSelectionBounds(EditorState& editor) {
     editor.selectionRadius = std::max(anim8orx::Length(maxPoint - editor.selectionCenter), 0.75f);
 }
 
+std::wstring ViewModeName(ViewMode mode) {
+    switch (mode) {
+        case ViewMode::All: return L"All";
+        case ViewMode::Front: return L"Front";
+        case ViewMode::Back: return L"Back";
+        case ViewMode::Left: return L"Left";
+        case ViewMode::Right: return L"Right";
+        case ViewMode::Top: return L"Top";
+        case ViewMode::Bottom: return L"Bottom";
+        case ViewMode::Ortho: return L"Ortho";
+        case ViewMode::Perspective: return L"Perspective";
+        default: return L"Perspective";
+    }
+}
+
+void SetViewportView(EditorState& editor, ViewMode mode) {
+    editor.activeView = mode;
+    editor.viewMenuOpen = false;
+
+    const Vec3 c = editor.selectionCenter;
+    const float d = std::max(editor.selectionRadius * 3.2f, 4.0f);
+
+    switch (mode) {
+        case ViewMode::Front:
+        case ViewMode::Ortho:
+            editor.camera.SetLookAt({c.x, c.y, c.z + d}, c);
+            break;
+        case ViewMode::Back:
+            editor.camera.SetLookAt({c.x, c.y, c.z - d}, c);
+            break;
+        case ViewMode::Left:
+            editor.camera.SetLookAt({c.x - d, c.y, c.z}, c);
+            break;
+        case ViewMode::Right:
+            editor.camera.SetLookAt({c.x + d, c.y, c.z}, c);
+            break;
+        case ViewMode::Top:
+            editor.camera.SetLookAt({c.x, c.y + d, c.z}, c);
+            break;
+        case ViewMode::Bottom:
+            editor.camera.SetLookAt({c.x, c.y - d, c.z}, c);
+            break;
+        case ViewMode::All:
+        case ViewMode::Perspective:
+        default:
+            editor.camera.SetLookAt({c.x + d * 0.85f, c.y + d * 0.65f, c.z + d}, c);
+            editor.activeView = mode == ViewMode::All ? ViewMode::All : ViewMode::Perspective;
+            break;
+    }
+
+    editor.camera.FocusOn(c, editor.selectionRadius);
+    AddConsoleLine(editor, L"Viewport switched to " + ViewModeName(editor.activeView) + L".");
+}
+
 bool LoadDocument(EditorState& editor, const std::filesystem::path& requestedPath) {
     std::filesystem::path path = requestedPath;
     if (path.empty()) {
@@ -282,11 +414,93 @@ bool LoadDocument(EditorState& editor, const std::filesystem::path& requestedPat
 
     RebuildMeshViews(editor);
     RecalculateSelectionBounds(editor);
-    editor.camera.SetLookAt(
-        {editor.selectionCenter.x, editor.selectionCenter.y, editor.selectionCenter.z + std::max(editor.selectionRadius * 3.0f, 4.0f)},
-        editor.selectionCenter);
-    editor.camera.FocusOn(editor.selectionCenter, editor.selectionRadius);
+    SetViewportView(editor, ViewMode::Perspective);
     return !editor.meshes.empty();
+}
+
+void RefreshWindowTitle(EditorState& editor) {
+    if (editor.hwnd == nullptr) {
+        return;
+    }
+
+    std::wstring title = L"Anim8orX";
+    if (!editor.loadedPath.empty()) {
+        title += L" - ";
+        title += editor.loadedPath.filename().wstring();
+    }
+    SetWindowTextW(editor.hwnd, title.c_str());
+}
+
+void LoadDocumentAndRefresh(EditorState& editor, const std::filesystem::path& path) {
+    if (LoadDocument(editor, path)) {
+        RefreshWindowTitle(editor);
+    }
+    InvalidateRect(editor.hwnd, nullptr, FALSE);
+}
+
+std::filesystem::path ShowOpenAn8Dialog(HWND owner) {
+    wchar_t fileName[MAX_PATH] = {};
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Anim8or Files (*.an8)\0*.an8\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = fileName;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = L"an8";
+    ofn.lpstrTitle = L"Open Anim8or .an8 File";
+
+    if (!GetOpenFileNameW(&ofn)) {
+        return {};
+    }
+
+    return std::filesystem::path(fileName);
+}
+
+void OpenAn8FromDialog(EditorState& editor) {
+    const std::filesystem::path path = ShowOpenAn8Dialog(editor.hwnd);
+    if (path.empty()) {
+        AddConsoleLine(editor, L"Open .an8 cancelled.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    LoadDocumentAndRefresh(editor, path);
+}
+
+void NewDefaultDocument(EditorState& editor) {
+    editor.document = BuildFallbackCubeDocument();
+    editor.loadedPath.clear();
+    RebuildMeshViews(editor);
+    RecalculateSelectionBounds(editor);
+    SetViewportView(editor, ViewMode::Perspective);
+    AddConsoleLine(editor, L"Created new default Anim8orX scene.");
+    RefreshWindowTitle(editor);
+    InvalidateRect(editor.hwnd, nullptr, FALSE);
+}
+
+void HandleDroppedFiles(EditorState& editor, HDROP drop) {
+    wchar_t pathBuffer[MAX_PATH] = {};
+    const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+
+    if (count == 0 || DragQueryFileW(drop, 0, pathBuffer, MAX_PATH) == 0) {
+        DragFinish(drop);
+        AddConsoleLine(editor, L"Drop did not contain a readable file.");
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    DragFinish(drop);
+
+    const std::filesystem::path path(pathBuffer);
+    if (path.extension() != L".an8" && path.extension() != L".AN8") {
+        AddConsoleLine(editor, L"Dropped file is not an .an8 file: " + path.filename().wstring());
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return;
+    }
+
+    LoadDocumentAndRefresh(editor, path);
 }
 
 std::vector<std::wstring> CommandLineArguments() {
@@ -516,7 +730,17 @@ void DrawTopBar(HDC dc, const EditorState& editor) {
     Fill(dc, bar, Rgb(48, 48, 48));
     DrawLine(dc, bar.x, bar.y + bar.h - 1, bar.x + bar.w, bar.y + bar.h - 1, Rgb(10, 10, 10));
 
-    int x = 4;
+    if (editor.logoImage != nullptr) {
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.DrawImage(editor.logoImage.get(), Gdiplus::Rect(bar.x + 4, bar.y + 3, 26, 26));
+    } else {
+        Fill(dc, {bar.x + 5, bar.y + 5, 22, 22}, Rgb(255, 148, 0));
+        Text(dc, L"X", bar.x + 5, bar.y + 5, 22, 22, Rgb(20, 20, 20), editor.boldFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    Text(dc, L"Anim8orX", bar.x + 36, bar.y, 86, bar.h, Rgb(255, 148, 0), editor.boldFont);
+
+    int x = 128;
     for (int i = 0; i < 15; ++i) {
         DrawIconButton(dc, editor, {x, bar.y + 4, 20, 20}, i, i == editor.activeTool);
         x += 23;
@@ -848,16 +1072,69 @@ void DrawInspector(HDC dc, const EditorState& editor) {
     DeleteObject(clip);
 }
 
+void DrawGridPlaneXZ(HDC dc, const EditorState& editor, float y, int extent, COLORREF minor, COLORREF major) {
+    for (int i = -extent; i <= extent; ++i) {
+        const COLORREF color = i == 0 || i % 5 == 0 ? major : minor;
+        DrawWorldLine(dc, editor, {static_cast<float>(i), y, static_cast<float>(-extent)}, {static_cast<float>(i), y, static_cast<float>(extent)}, color);
+        DrawWorldLine(dc, editor, {static_cast<float>(-extent), y, static_cast<float>(i)}, {static_cast<float>(extent), y, static_cast<float>(i)}, color);
+    }
+}
+
+void DrawGridPlaneXY(HDC dc, const EditorState& editor, float z, int extent, COLORREF minor, COLORREF major) {
+    for (int i = -extent; i <= extent; ++i) {
+        const COLORREF color = i == 0 || i % 5 == 0 ? major : minor;
+        DrawWorldLine(dc, editor, {static_cast<float>(i), static_cast<float>(-extent), z}, {static_cast<float>(i), static_cast<float>(extent), z}, color);
+        DrawWorldLine(dc, editor, {static_cast<float>(-extent), static_cast<float>(i), z}, {static_cast<float>(extent), static_cast<float>(i), z}, color);
+    }
+}
+
+void DrawGridPlaneZY(HDC dc, const EditorState& editor, float x, int extent, COLORREF minor, COLORREF major) {
+    for (int i = -extent; i <= extent; ++i) {
+        const COLORREF color = i == 0 || i % 5 == 0 ? major : minor;
+        DrawWorldLine(dc, editor, {x, static_cast<float>(-extent), static_cast<float>(i)}, {x, static_cast<float>(extent), static_cast<float>(i)}, color);
+        DrawWorldLine(dc, editor, {x, static_cast<float>(i), static_cast<float>(-extent)}, {x, static_cast<float>(i), static_cast<float>(extent)}, color);
+    }
+}
+
 void DrawGridAndAxes(HDC dc, const EditorState& editor) {
-    for (int i = -10; i <= 10; ++i) {
-        const COLORREF gridColor = i == 0 ? Rgb(73, 78, 88) : Rgb(45, 49, 57);
-        DrawWorldLine(dc, editor, {static_cast<float>(i), 0.0f, -10.0f}, {static_cast<float>(i), 0.0f, 10.0f}, gridColor);
-        DrawWorldLine(dc, editor, {-10.0f, 0.0f, static_cast<float>(i)}, {10.0f, 0.0f, static_cast<float>(i)}, gridColor);
+    constexpr int extent = 12;
+    const COLORREF minor = Rgb(63, 67, 70);
+    const COLORREF major = Rgb(91, 96, 100);
+    const COLORREF depth = Rgb(54, 58, 62);
+
+    switch (editor.activeView) {
+        case ViewMode::Front:
+        case ViewMode::Back:
+        case ViewMode::Ortho:
+            DrawGridPlaneXY(dc, editor, 0.0f, extent, minor, major);
+            break;
+        case ViewMode::Left:
+        case ViewMode::Right:
+            DrawGridPlaneZY(dc, editor, 0.0f, extent, minor, major);
+            break;
+        case ViewMode::Top:
+        case ViewMode::Bottom:
+            DrawGridPlaneXZ(dc, editor, 0.0f, extent, minor, major);
+            break;
+        case ViewMode::All:
+        case ViewMode::Perspective:
+        default:
+            DrawGridPlaneXZ(dc, editor, 0.0f, extent, minor, major);
+            for (int i = -extent; i <= extent; i += 2) {
+                DrawWorldLine(dc, editor, {static_cast<float>(i), 0.0f, static_cast<float>(-extent)}, {static_cast<float>(i), 6.0f, static_cast<float>(-extent)}, depth);
+                DrawWorldLine(dc, editor, {static_cast<float>(-extent), 0.0f, static_cast<float>(i)}, {static_cast<float>(-extent), 6.0f, static_cast<float>(i)}, depth);
+            }
+            for (int y = 1; y <= 6; ++y) {
+                const float fy = static_cast<float>(y);
+                DrawWorldLine(dc, editor, {static_cast<float>(-extent), fy, static_cast<float>(-extent)}, {static_cast<float>(extent), fy, static_cast<float>(-extent)}, depth);
+                DrawWorldLine(dc, editor, {static_cast<float>(-extent), fy, static_cast<float>(-extent)}, {static_cast<float>(-extent), fy, static_cast<float>(extent)}, depth);
+            }
+            break;
     }
 
-    DrawWorldLine(dc, editor, {-10.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, Rgb(176, 82, 82), 2);
-    DrawWorldLine(dc, editor, {0.0f, 0.0f, -10.0f}, {0.0f, 0.0f, 10.0f}, Rgb(82, 140, 92), 2);
-    DrawWorldLine(dc, editor, {0.0f, -1.0f, 0.0f}, {0.0f, 4.0f, 0.0f}, Rgb(78, 130, 202), 2);
+    DrawWorldLine(dc, editor, {-extent, 0.0f, 0.0f}, {extent, 0.0f, 0.0f}, Rgb(190, 73, 73), 2);
+    DrawWorldLine(dc, editor, {0.0f, 0.0f, -extent}, {0.0f, 0.0f, extent}, Rgb(76, 152, 88), 2);
+    DrawWorldLine(dc, editor, {0.0f, -2.0f, 0.0f}, {0.0f, 8.0f, 0.0f}, Rgb(86, 134, 220), 2);
 }
 
 void DrawMeshes(HDC dc, const EditorState& editor) {
@@ -892,24 +1169,16 @@ void DrawViewport(HDC dc, const EditorState& editor) {
     HRGN clip = CreateRectRgn(viewport.x + 1, viewport.y + 1, viewport.x + viewport.w - 1, viewport.y + viewport.h - 1);
     SelectClipRgn(dc, clip);
 
-    const int major = 101;
-    const int minor = major / 2;
-    for (int x = viewport.x; x < viewport.x + viewport.w; x += minor) {
-        const bool isMajor = ((x - viewport.x) / minor) % 2 == 0;
-        DrawLine(dc, x, viewport.y, x, viewport.y + viewport.h, isMajor ? Rgb(105, 105, 105) : Rgb(82, 82, 82));
-    }
-    for (int y = viewport.y; y < viewport.y + viewport.h; y += minor) {
-        const bool isMajor = ((y - viewport.y) / minor) % 2 == 0;
-        DrawLine(dc, viewport.x, y, viewport.x + viewport.w, y, isMajor ? Rgb(105, 105, 105) : Rgb(82, 82, 82));
-    }
-
     DrawGridAndAxes(dc, editor);
     DrawMeshes(dc, editor);
 
     SelectClipRgn(dc, nullptr);
     DeleteObject(clip);
 
-    Text(dc, L"Front", viewport.x + 16, viewport.y + 8, 120, 22, Rgb(255, 148, 0), editor.boldFont);
+    RectI viewLabel{viewport.x + 10, viewport.y + 8, 154, 24};
+    Fill(dc, viewLabel, Rgb(54, 54, 54));
+    Stroke(dc, viewLabel, editor.viewMenuOpen ? Rgb(255, 148, 0) : Rgb(82, 82, 82));
+    Text(dc, ViewModeName(editor.activeView) + L"  v", viewLabel.x + 7, viewLabel.y, viewLabel.w - 14, viewLabel.h, Rgb(255, 148, 0), editor.boldFont);
 
     const int axisX = viewport.x + 22;
     const int axisY = viewport.y + viewport.h - 42;
@@ -921,6 +1190,47 @@ void DrawViewport(HDC dc, const EditorState& editor) {
     Fill(dc, {viewport.x + viewport.w - 316, viewport.y + 8, 300, 24}, Rgb(47, 47, 47));
     Stroke(dc, {viewport.x + viewport.w - 316, viewport.y + 8, 300, 24}, Rgb(88, 88, 88));
     Text(dc, L"RMB+WASD fly  Alt+LMB orbit  F focus", viewport.x + viewport.w - 308, viewport.y + 8, 284, 24, Rgb(188, 188, 188), editor.smallFont);
+}
+
+RectI ViewLabelRect(const EditorState& editor) {
+    const RectI& viewport = editor.layout.viewport;
+    return {viewport.x + 10, viewport.y + 8, 154, 24};
+}
+
+ViewMode ViewModeFromPopupIndex(int index) {
+    switch (index) {
+        case 0: return ViewMode::All;
+        case 1: return ViewMode::Front;
+        case 2: return ViewMode::Back;
+        case 3: return ViewMode::Left;
+        case 4: return ViewMode::Right;
+        case 5: return ViewMode::Top;
+        case 6: return ViewMode::Bottom;
+        case 7: return ViewMode::Ortho;
+        case 8: return ViewMode::Perspective;
+        default: return ViewMode::Perspective;
+    }
+}
+
+void DrawViewportViewPopup(HDC dc, const EditorState& editor) {
+    if (!editor.viewMenuOpen) {
+        return;
+    }
+
+    const RectI label = ViewLabelRect(editor);
+    const int rowH = 23;
+    const int count = 9;
+    RectI menu{label.x, label.y + label.h + 2, 154, rowH * count + 8};
+    Fill(dc, menu, Rgb(29, 31, 36));
+    Stroke(dc, menu, Rgb(255, 148, 0));
+
+    for (int i = 0; i < count; ++i) {
+        const ViewMode mode = ViewModeFromPopupIndex(i);
+        RectI row{menu.x + 4, menu.y + 4 + i * rowH, menu.w - 8, rowH};
+        const bool active = mode == editor.activeView;
+        Fill(dc, row, active ? Rgb(55, 48, 38) : Rgb(29, 31, 36));
+        Text(dc, ViewModeName(mode), row.x + 8, row.y, row.w - 16, row.h, active ? Rgb(255, 148, 0) : Rgb(229, 232, 237), editor.smallFont);
+    }
 }
 
 void DrawConsole(HDC dc, const EditorState& editor) {
@@ -978,6 +1288,7 @@ void PaintEditor(HWND hwnd, EditorState& editor) {
     DrawInspector(dc, editor);
     DrawConsole(dc, editor);
     DrawStatus(dc, editor);
+    DrawViewportViewPopup(dc, editor);
 
     BitBlt(windowDc, 0, 0, editor.width, editor.height, dc, 0, 0, SRCCOPY);
     SelectObject(dc, oldBitmap);
@@ -1122,6 +1433,33 @@ void ClickPropertyDeck(EditorState& editor, int x, int y) {
     }
 }
 
+bool ClickViewportViewSelector(EditorState& editor, int x, int y) {
+    const RectI label = ViewLabelRect(editor);
+    if (label.Contains(x, y)) {
+        editor.viewMenuOpen = !editor.viewMenuOpen;
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return true;
+    }
+
+    if (!editor.viewMenuOpen) {
+        return false;
+    }
+
+    const int rowH = 23;
+    const int count = 9;
+    RectI menu{label.x, label.y + label.h + 2, 154, rowH * count + 8};
+    if (menu.Contains(x, y)) {
+        const int index = std::clamp((y - menu.y - 4) / rowH, 0, count - 1);
+        SetViewportView(editor, ViewModeFromPopupIndex(index));
+        InvalidateRect(editor.hwnd, nullptr, FALSE);
+        return true;
+    }
+
+    editor.viewMenuOpen = false;
+    InvalidateRect(editor.hwnd, nullptr, FALSE);
+    return false;
+}
+
 void ClickTopBar(EditorState& editor, int x, int y) {
     if (!editor.layout.topBar.Contains(x, y)) {
         return;
@@ -1171,7 +1509,7 @@ HMENU CreateAnim8orXMenu() {
         {L"Mode", {L"Object", L"Figure", L"Sequence", L"Scene", nullptr}},
         {L"Object", {L"New Mesh", L"Convert to Mesh", L"Join Solids", L"Subdivide Faces", L"Extrude", L"Lathe", L"Mirror", L"Smooth", nullptr}},
         {L"Options", {L"Grid", L"Snapping", L"Show Axis", L"Show Normals", L"Backface Culling", L"Theme", nullptr}},
-        {L"View", {L"Front", L"Back", L"Left", L"Right", L"Top", L"Bottom", L"Perspective", L"Frame Selection", nullptr}},
+        {L"View", {L"All", L"Front", L"Back", L"Left", L"Right", L"Top", L"Bottom", L"Ortho", L"Perspective", L"Frame Selection", nullptr}},
         {L"Build", {L"Add Cube", L"Add Sphere", L"Add Cylinder", L"Add Cone", L"Add Text", L"Add Bone", L"Add Camera", L"Add Light", nullptr}},
         {L"Scripts", {L"Run Script...", L"Script Console", L"Reload Scripts", nullptr}},
         {L"Render", {L"Preview Render", L"Render Settings", L"Materials", L"Lights", nullptr}},
@@ -1183,8 +1521,18 @@ HMENU CreateAnim8orXMenu() {
         HMENU popup = CreatePopupMenu();
         for (int i = 0; i < 12 && spec.items[i] != nullptr; ++i) {
             UINT_PTR id = 2000 + static_cast<UINT_PTR>((spec.name[0] << 4) + i);
-            if (wcscmp(spec.name, L"Mode") == 0) {
+            if (wcscmp(spec.name, L"File") == 0) {
+                if (i == 0) {
+                    id = kMenuFileNew;
+                } else if (i == 1) {
+                    id = kMenuFileOpen;
+                } else if (i == 7) {
+                    id = kMenuFileExit;
+                }
+            } else if (wcscmp(spec.name, L"Mode") == 0) {
                 id = i == 0 ? kMenuModeObject : i == 1 ? kMenuModeFigure : i == 2 ? kMenuModeSequence : kMenuModeScene;
+            } else if (wcscmp(spec.name, L"View") == 0) {
+                id = kMenuViewAll + i;
             }
             AppendMenuW(popup, MF_STRING, id, spec.items[i]);
         }
@@ -1210,6 +1558,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                            DEFAULT_PITCH | FF_DONTCARE, L"Consolas");
             CalculateLayout(editor);
+            DragAcceptFiles(hwnd, TRUE);
             SetTimer(hwnd, kFrameTimerId, kFrameMillis, nullptr);
             return 0;
 
@@ -1233,6 +1582,15 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
+                case kMenuFileNew:
+                    NewDefaultDocument(editor);
+                    break;
+                case kMenuFileOpen:
+                    OpenAn8FromDialog(editor);
+                    break;
+                case kMenuFileExit:
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    break;
                 case kMenuModeObject:
                     SetEditorMode(editor, 0);
                     break;
@@ -1245,6 +1603,33 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 case kMenuModeScene:
                     SetEditorMode(editor, 3);
                     break;
+                case kMenuViewAll:
+                    SetViewportView(editor, ViewMode::All);
+                    break;
+                case kMenuViewFront:
+                    SetViewportView(editor, ViewMode::Front);
+                    break;
+                case kMenuViewBack:
+                    SetViewportView(editor, ViewMode::Back);
+                    break;
+                case kMenuViewLeft:
+                    SetViewportView(editor, ViewMode::Left);
+                    break;
+                case kMenuViewRight:
+                    SetViewportView(editor, ViewMode::Right);
+                    break;
+                case kMenuViewTop:
+                    SetViewportView(editor, ViewMode::Top);
+                    break;
+                case kMenuViewBottom:
+                    SetViewportView(editor, ViewMode::Bottom);
+                    break;
+                case kMenuViewOrtho:
+                    SetViewportView(editor, ViewMode::Ortho);
+                    break;
+                case kMenuViewPerspective:
+                    SetViewportView(editor, ViewMode::Perspective);
+                    break;
                 default:
                     AddConsoleLine(editor, L"Menu command selected. Implementation pending.");
                     break;
@@ -1252,9 +1637,17 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
 
+        case WM_DROPFILES:
+            HandleDroppedFiles(editor, reinterpret_cast<HDROP>(wParam));
+            return 0;
+
         case WM_LBUTTONDOWN: {
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
+            if (ClickViewportViewSelector(editor, x, y)) {
+                return 0;
+            }
+
             if (editor.layout.viewport.Contains(x, y)) {
                 editor.leftMouseDown = true;
                 CaptureViewportMouse(hwnd, editor, x, y);
@@ -1336,6 +1729,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             return 0;
 
         case WM_DESTROY:
+            DragAcceptFiles(hwnd, FALSE);
             KillTimer(hwnd, kFrameTimerId);
             if (editor.font != nullptr) {
                 DeleteObject(editor.font);
@@ -1359,12 +1753,18 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 int RunSmokeTest(const std::filesystem::path& path) {
     EditorState testEditor;
     LoadDocument(testEditor, path);
-    return testEditor.meshes.empty() ? 1 : 0;
+    LoadLogo(testEditor);
+    return testEditor.meshes.empty() || testEditor.logoImage == nullptr ? 1 : 0;
 }
 
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    if (Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
+        return 1;
+    }
+
     const std::vector<std::wstring> args = CommandLineArguments();
 
     bool smokeTest = false;
@@ -1378,10 +1778,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
 
     if (smokeTest) {
-        return RunSmokeTest(requestedPath);
+        const int result = RunSmokeTest(requestedPath);
+        Gdiplus::GdiplusShutdown(g_gdiplusToken);
+        return result;
     }
 
     LoadDocument(g_editor, requestedPath);
+    LoadLogo(g_editor);
 
     WNDCLASSEXW windowClass{};
     windowClass.cbSize = sizeof(windowClass);
@@ -1389,12 +1792,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     windowClass.lpfnWndProc = EditorWindowProc;
     windowClass.hInstance = instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    windowClass.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
+    windowClass.hIcon = g_editor.logoIcon != nullptr ? g_editor.logoIcon : LoadIconW(nullptr, IDI_APPLICATION);
+    windowClass.hIconSm = g_editor.logoIcon != nullptr ? g_editor.logoIcon : LoadIconW(nullptr, IDI_APPLICATION);
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     windowClass.lpszClassName = kWindowClassName;
 
     if (!RegisterClassExW(&windowClass)) {
+        Gdiplus::GdiplusShutdown(g_gdiplusToken);
         return 1;
     }
 
@@ -1416,10 +1820,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         nullptr);
 
     if (hwnd == nullptr) {
+        Gdiplus::GdiplusShutdown(g_gdiplusToken);
         return 1;
     }
 
     SetMenu(hwnd, CreateAnim8orXMenu());
+    RefreshWindowTitle(g_editor);
     ShowWindow(hwnd, showCommand);
     UpdateWindow(hwnd);
 
@@ -1429,5 +1835,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         DispatchMessageW(&message);
     }
 
+    g_editor.logoImage.reset();
+    if (g_editor.logoIcon != nullptr) {
+        DestroyIcon(g_editor.logoIcon);
+        g_editor.logoIcon = nullptr;
+    }
+    Gdiplus::GdiplusShutdown(g_gdiplusToken);
     return static_cast<int>(message.wParam);
 }

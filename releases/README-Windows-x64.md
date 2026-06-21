@@ -6,11 +6,14 @@ Use it to verify:
 
 - Default GUI launch.
 - Native Anim8or-like menu bar and compact command strip.
+- Anim8orX logo in the command strip and window icon.
+- File loading through `File > Open .an8...` and drag-and-drop.
 - Slim left modeling rail with mode, coordinate, axis, tool, UV, shape, rig, and key groups.
 - Anim8or-style Object, Figure, Sequence, and Scene modes.
 - UniverseLib-style dock entry points for Explorer, Inspector, Console, Materials, and Timeline.
 - Anim8orX property deck pages for Setup, View, Material, Object, Figure, Sequence, Scene, and Render.
 - Unity-style viewport camera input path.
+- World-space 3D grid and custom dark view selector.
 - Native `.an8` file loading.
 - Object and mesh discovery.
 - Point and face parsing.

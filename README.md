@@ -8,6 +8,10 @@ This repository currently contains the first editor-shell brick with an Anim8or-
 - Native menu surface: File, Edit, Mode, Object, Options, View, Build, Scripts, Render, Window, About.
 - Anim8or-style compact command strip, Object/Figure/Sequence/Scene tabs, left modeling tool rail, gray grid viewport, orange active labels, and bottom object/status strip.
 - Anim8orX-branded property deck with Setup, View, Material, Object, Figure, Sequence, Scene, and Render pages.
+- Branded `wlogo.png` logo displayed in the app chrome and used as the window icon.
+- World-space 3D grid in the viewport with camera-projected floor/depth guides.
+- Custom dark in-viewport view selector for All, Front, Back, Left, Right, Top, Bottom, Ortho, and Perspective.
+- File loading through `File > Open .an8...`, drag-and-drop `.an8` files, command-line file arguments, or the bundled sample.
 - UniverseLib-inspired dock entry points and bottom dock for Explorer, Inspector, Console, Materials, and Timeline.
 - Tool surface for selection, transforms, primitive shapes, UV tools, rigging, keys, extrude, lathe, subdivision, camera, and light workflows.
 - Visible parameter surface for grid/snap preferences, viewport display flags, material shader values, primitive dimensions, modifier inputs, bone/DOF constraints, sequence interpolation, scene actor/camera/light controls, and render output options.
@@ -46,6 +50,7 @@ include/Anim8orX/Viewport/Camera.hpp     Unity-style viewport camera math
 include/Anim8orX/Import/An8Parser.hpp    Native .an8 parser and triangulation
 docs/architecture/Step1_Blueprint.md     UI and engine architecture blueprint
 examples/cube.an8                        Minimal parser test asset
+assets/wlogo.png                         Anim8orX logo asset
 src/main.cpp                             Native editor shell
 ```
 
