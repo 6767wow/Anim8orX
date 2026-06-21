@@ -20,7 +20,7 @@ This repository currently contains the first editor-shell brick with an Anim8or-
 - Working Object commands for delete, extrude, inset, lathe, mirror, and face subdivision.
 - Visible parameter surface for live grid/snap preferences, viewport display flags, wireframe/flat-shaded toggles, material and texture-map status, primitive dimensions, modifier inputs, bone/DOF constraints, sequence interpolation, scene actor/camera/light controls, and render output options.
 - Default cube viewport rendered as a filled flat-shaded object at launch.
-- Self-contained C++17 viewport camera controller with RMB+WASD fly, RMB+mouse wheel fly-speed adjustment, Alt+LMB orbit, Alt+MMB pan, scroll dolly, and F focus support.
+- Self-contained C++17 viewport camera controller with RMB+WASD fly, RMB+mouse wheel fly-speed adjustment, Alt+LMB orbit, Alt+MMB pan, scroll dolly, F focus support, and plain viewport clicks that focus without entering navigation preview mode.
 - Self-contained C++17 `.an8` lexer/parser for textures, material diffuse maps, materials, objects, groups, meshes, subdivision control meshes, primitive components, base origin/orientation transforms, points, UVs, nested face point-data, and triangle-list geometry preparation.
 
 ## Build

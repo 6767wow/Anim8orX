@@ -3140,10 +3140,23 @@ void CaptureViewportMouse(HWND hwnd, EditorState& editor, int x, int y) {
 
 void ReleaseViewportMouse(EditorState& editor) {
     if (!editor.leftMouseDown && !editor.middleMouseDown && !editor.rightMouseDown) {
-        ReleaseCapture();
+        if (GetCapture() == editor.hwnd) {
+            ReleaseCapture();
+        }
         StopFrameTimer(editor.hwnd, editor);
         InvalidateViewport(editor);
     }
+}
+
+void CancelViewportMouse(EditorState& editor) {
+    editor.leftMouseDown = false;
+    editor.middleMouseDown = false;
+    editor.rightMouseDown = false;
+    editor.accumulatedMouseDx = 0.0f;
+    editor.accumulatedMouseDy = 0.0f;
+    editor.accumulatedWheel = 0.0f;
+    StopFrameTimer(editor.hwnd, editor);
+    InvalidateViewport(editor);
 }
 
 void ClickHierarchy(EditorState& editor, int x, int y) {
@@ -3655,8 +3668,15 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             }
 
             if (editor.layout.viewport.Contains(x, y)) {
-                editor.leftMouseDown = true;
-                CaptureViewportMouse(hwnd, editor, x, y);
+                editor.viewportActive = true;
+                editor.lastMouse = POINT{x, y};
+                SetFocus(hwnd);
+                if (IsKeyDown(VK_MENU)) {
+                    editor.leftMouseDown = true;
+                    CaptureViewportMouse(hwnd, editor, x, y);
+                } else {
+                    InvalidateViewport(editor);
+                }
             } else {
                 ClickTopBar(editor, x, y);
                 ClickToolRail(editor, x, y);
@@ -3690,8 +3710,15 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
             if (editor.layout.viewport.Contains(x, y)) {
-                editor.middleMouseDown = true;
-                CaptureViewportMouse(hwnd, editor, x, y);
+                editor.viewportActive = true;
+                editor.lastMouse = POINT{x, y};
+                SetFocus(hwnd);
+                if (IsKeyDown(VK_MENU)) {
+                    editor.middleMouseDown = true;
+                    CaptureViewportMouse(hwnd, editor, x, y);
+                } else {
+                    InvalidateViewport(editor);
+                }
             }
             return 0;
         }
@@ -3751,9 +3778,15 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 editor.accumulatedWheel = 0.0f;
                 editor.focusPressed = false;
                 ReleaseCapture();
-                StopFrameTimer(hwnd, editor);
+                CancelViewportMouse(editor);
                 InvalidateViewport(editor);
             }
+            return 0;
+
+        case WM_CAPTURECHANGED:
+        case WM_CANCELMODE:
+        case WM_KILLFOCUS:
+            CancelViewportMouse(editor);
             return 0;
 
         case WM_DESTROY:
