@@ -2377,7 +2377,7 @@ void DrawInspector(HDC dc, const EditorState& editor) {
         case 1:
             DrawSectionTitle(dc, editor, x, y, L"Display Mode Flags");
             DrawCheckboxRow(dc, editor, x, y, L"Wireframe", editor.showWireframe); y += 22;
-            DrawCheckboxRow(dc, editor, x, y, L"Flat Shaded", editor.flatShaded); y += 22;
+            DrawCheckboxRow(dc, editor, x, y, L"Flat Lighting", editor.flatShaded); y += 22;
             DrawCheckboxRow(dc, editor, x, y, L"Smooth Shaded", false); y += 22;
             DrawCheckboxRow(dc, editor, x, y, L"Textured", !editor.loadedTextures.empty()); y += 30;
             DrawSectionTitle(dc, editor, x, y, L"Camera");
@@ -2608,9 +2608,8 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
 
     const bool navigationPreview = editor.leftMouseDown || editor.middleMouseDown || editor.rightMouseDown || editor.frameTimerActive;
     const size_t faceBudget = navigationPreview ? 6000u : static_cast<size_t>(-1);
-    const bool drawEdges = editor.showWireframe ||
-                           !editor.flatShaded ||
-                           editor.showNormals;
+    const bool drawFilledFaces = true;
+    const bool drawEdges = editor.showWireframe || editor.showNormals;
     size_t visibleFaces = 0;
     for (const MeshView& mesh : editor.meshes) {
         if (ShouldDisplayMesh(editor, mesh)) {
@@ -2621,7 +2620,7 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
 
     std::vector<std::vector<ProjectionPoint>> projectedByMesh(editor.meshes.size());
     std::vector<DrawFaceCommand> fillCommands;
-    if (editor.flatShaded) {
+    if (drawFilledFaces) {
         fillCommands.reserve(std::min(visibleFaces, faceBudget));
     }
 
@@ -2685,7 +2684,7 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                 }
             }
 
-            if (editor.flatShaded) {
+            if (drawFilledFaces) {
                 bool allVisible = true;
                 float depthSum = 0.0f;
                 for (uint32_t index : face.indices) {
@@ -2702,7 +2701,7 @@ void DrawMeshes(HDC dc, const EditorState& editor) {
                         meshIndex,
                         faceIndex,
                         depthSum / static_cast<float>(face.indices.size()),
-                        FaceFillColor(base, selected, hasNormal, normal)
+                        FaceFillColor(base, selected, editor.flatShaded && hasNormal, normal)
                     });
                 }
             }
@@ -3353,7 +3352,7 @@ HMENU CreateAnim8orXMenu() {
         {L"Edit", {L"Undo", L"Redo", L"Cut", L"Copy", L"Paste", L"Delete", L"Select All", L"Preferences", nullptr}},
         {L"Mode", {L"Object", L"Figure", L"Sequence", L"Scene", nullptr}},
         {L"Object", {L"New Mesh", L"Convert to Mesh", L"Join Solids", L"Subdivide Faces", L"Extrude", L"Inset", L"Lathe", L"Mirror", L"Smooth", nullptr}},
-        {L"Options", {L"Grid", L"Snapping", L"Show Axis", L"Show Normals", L"Backface Culling", L"Wireframe", L"Flat Shaded", L"Theme", nullptr}},
+        {L"Options", {L"Grid", L"Snapping", L"Show Axis", L"Show Normals", L"Backface Culling", L"Wireframe", L"Flat Lighting", L"Theme", nullptr}},
         {L"View", {L"All", L"Front", L"Back", L"Left", L"Right", L"Top", L"Bottom", L"Ortho", L"Perspective", L"Frame Selection", nullptr}},
         {L"Build", {L"Add Cube", L"Add Sphere", L"Add Cylinder", L"Add Cone", L"Add Torus", L"Add Text", L"Add Bone", L"Add Camera", L"Add Light", nullptr}},
         {L"Scripts", {L"Run Script...", L"Script Console", L"Reload Scripts", nullptr}},
@@ -3592,7 +3591,7 @@ LRESULT CALLBACK EditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 case kMenuOptionFlatShaded:
                     editor.flatShaded = !editor.flatShaded;
                     editor.propertyPage = 1;
-                    AddConsoleLine(editor, editor.flatShaded ? L"Flat shaded faces enabled." : L"Flat shaded faces disabled.");
+                    AddConsoleLine(editor, editor.flatShaded ? L"Flat lighting enabled." : L"Flat lighting disabled; solid faces remain enabled.");
                     break;
                 case kMenuOptionPreferences:
                     editor.propertyPage = 0;
